@@ -1,14 +1,14 @@
-params.vcfDir = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/07.select_pass_qc_samples'
+params.vcfDir = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/05.gt_norm'
 params.scriptDir = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/script'
 params.outdir = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/tuning.variant'
 
-// Channel
-//     .from((1..22).collect { "chr${it}" } + ["PAR"])
-//     .set { chr_ch }
-
 Channel
-    .from((1..22).collect { "chr${it}" })
+    .from((1..22).collect { "chr${it}" } + ["PAR"])
     .set { chr_ch }
+
+// Channel
+//     .from((1..22).collect { "chr${it}" })
+//     .set { chr_ch }
 
 process mq_vq_check {
     executor 'slurm'
@@ -29,7 +29,7 @@ process mq_vq_check {
     tuple chr, file(pdf) into mq_vq_check_out
 
     script:
-    vcf = "${vcfDir}/${chr}.pass.mac1.het.smiss.vcf.gz"
+    vcf = "${vcfDir}/${chr}.pass.mac1.setid.gt_af.norm.vcf.gz"
     pdf = "${chr}.mq.vq.check.pdf"
     """
     python ${scriptDir}/variant.parameter.py --chrom ${chr} --vcf_path ${vcf} --MQ 58.75 --VQSLOD 10 --output_pdf ${pdf}
