@@ -5,7 +5,7 @@ params.scriptDir = "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/tu
 params.outDir = "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/tuning.concordance.rev1/results"
 
 Channel
-    .from((22).collect { "chr${it}" })
+    .from((1..22).collect { "chr${it}" })
     .set { chr_ch }
 
 process FormatMatrixPrepare {
