@@ -1,4 +1,3 @@
-# %%
 """
 extract_vcf_format.py
 本脚本用于从两个VCF文件（如WGS与Array）中提取指定染色体上共享变异位点和样本的FORMAT字段矩阵，适用于基因型一致性评估等分析场景。
@@ -38,6 +37,7 @@ import tempfile
 import os
 import gc
 import shutil
+import gzip
 
 # %%
 # 设置参数
@@ -74,7 +74,9 @@ chr = args.chr
 
 # %%
 
-def extract_variant_ids(vcf_path: str, chr: str, max_variants: int = None) -> set:
+from typing import Optional
+
+def extract_variant_ids(vcf_path: str, chr: str, max_variants: Optional[int] = None) -> set:
     """提取 VCF 中 chr 上的所有 ID 字段为集合"""
     query_cmd = [
         "bcftools", "query",
@@ -85,14 +87,14 @@ def extract_variant_ids(vcf_path: str, chr: str, max_variants: int = None) -> se
     proc = subprocess.Popen(query_cmd, stdout=subprocess.PIPE, text=True, bufsize=8192)
 
     variant_ids = set()
-    for i, line in enumerate(proc.stdout):
-        if max_variants is not None and i >= max_variants:
-            break
-        line = line.rstrip('\n')
-        if line != ".":
-            variant_ids.add(line)
-
-    proc.stdout.close()
+    if proc.stdout is not None:
+        for i, line in enumerate(proc.stdout):
+            if max_variants is not None and i >= max_variants:
+                break
+            line = line.rstrip('\n')
+            if line != ".":
+                variant_ids.add(line)
+        proc.stdout.close()
     proc.wait()
     return variant_ids
 
@@ -111,17 +113,28 @@ def extract_sample_ids(vcf_path: str) -> list:
 max_variants = args.max_variants
 
 # === 并行提取 ID ===
+from concurrent.futures import wait
+
 with ThreadPoolExecutor(max_workers=2) as executor:
-    future_true = executor.submit(extract_variant_ids, true_vcf_path, chr, max_variants)
-    future_call = executor.submit(extract_variant_ids, call_vcf_path, chr, max_variants)
-    true_ids = future_true.result()
-    call_ids = future_call.result()
+    futures = {
+        "true": executor.submit(extract_variant_ids, true_vcf_path, chr, max_variants),
+        "call": executor.submit(extract_variant_ids, call_vcf_path, chr, max_variants)
+    }
+    done, not_done = wait(futures.values())
+    for fut in done:
+        exc = fut.exception()
+        if exc is not None:
+            raise exc
+    true_ids = futures["true"].result()
+    call_ids = futures["call"].result()
 
 # === 提取 shared IDs 和 shared samples ===
 shared_variant_ids = true_ids & call_ids
+shared_variant_ids = sorted(shared_variant_ids, key=lambda x: int(x.split(":")[1]))
 true_samples = extract_sample_ids(true_vcf_path)
 call_samples = extract_sample_ids(call_vcf_path)
-shared_samples = set(true_samples) & set(call_samples)
+shared_samples = sorted(set(true_samples) & set(call_samples))  # 保证顺序
+
 
 # === 可选输出检查 ===
 print(f"Shared samples: {len(shared_samples)}")
@@ -132,9 +145,7 @@ del true_ids, call_ids, true_samples, call_samples
 gc.collect()
 
 # %%
-# === 排序并转换为列表 ===
-shared_variant_ids = sorted(shared_variant_ids)
-shared_samples = sorted(shared_samples)
+# === 输出共享变异ID和样本ID到文件 ===
 
 with open(f"{chr}.shared_variant_ids.txt", "w") as f:
     for vid in shared_variant_ids:
@@ -206,10 +217,13 @@ def extract_format_matrices_to_disk(
     
     # 获取VCF中样本名
     header = subprocess.check_output(["bcftools", "view", "-h", vcf_path], text=True)
+    vcf_samples = None
     for line in header.strip().splitlines():
         if line.startswith("#CHROM"):
             vcf_samples = line.strip().split('\t')[VCF_COLUMNS["SAMPLES_START"]:]
             break
+    if vcf_samples is None:
+        raise RuntimeError("Could not find #CHROM header line in VCF to extract sample IDs.")
 
     # 初始化结果字典
     result = {field: {s: [] for s in sample_ids} for field in format_fields_to_extract}
@@ -223,46 +237,48 @@ def extract_format_matrices_to_disk(
     ]
     proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
 
-    for line in proc.stdout:
-        if line.startswith("#"):
-            continue
-        fields = line.strip().split("\t")
-        chrom = fields[VCF_COLUMNS["CHROM"]]
-        pos = int(fields[VCF_COLUMNS["POS"]])
-        ref = fields[VCF_COLUMNS["REF"]]
-        alt = fields[VCF_COLUMNS["ALT"]].split(',')[0]
-        key = (chrom, pos, ref, alt)
-        if key not in loci_dict:
-            continue
-        locus_id = loci_dict[key]
+    if proc.stdout is not None:
+        for line in proc.stdout:
+            if line.startswith("#"):
+                continue
+            fields = line.strip().split("\t")
+            chrom = fields[VCF_COLUMNS["CHROM"]]
+            pos = int(fields[VCF_COLUMNS["POS"]])
+            ref = fields[VCF_COLUMNS["REF"]]
+            alt = fields[VCF_COLUMNS["ALT"]].split(',')[0]
+            key = (chrom, pos, ref, alt)
+            if key not in loci_dict:
+                continue
+            locus_id = loci_dict[key]
 
-        format_keys = fields[VCF_COLUMNS["FORMAT"]].split(":")
-        format_index = {k: i for i, k in enumerate(format_keys)}
-        sample_fields = fields[VCF_COLUMNS["SAMPLES_START"]:]
+            format_keys = fields[VCF_COLUMNS["FORMAT"]].split(":")
+            format_index = {k: i for i, k in enumerate(format_keys)}
+            sample_fields = fields[VCF_COLUMNS["SAMPLES_START"]:]
 
-        for field in format_fields_to_extract:
-            values = []
-            for sample_str in sample_fields:
-                parts = sample_str.split(":")
-                raw_value = parts[format_index[field]] if field in format_index and len(parts) > format_index[field] else None
-                if field == "GT":
-                    val = gt_map.get(raw_value, np.nan) if use_gt_map else raw_value
-                elif field == "AD":
-                    try:
-                        val = tuple(map(int, raw_value.split(","))) if raw_value and "," in raw_value else np.nan
-                    except:
-                        val = np.nan
-                else:
-                    try:
-                        val = float(raw_value) if raw_value not in [None, "."] else np.nan
-                    except:
-                        val = np.nan
-                values.append(val)
-            per_sample = dict(zip(vcf_samples, values))
-            for s in sample_ids:
-                result[field][s].append(per_sample.get(s, np.nan))
+            for field in format_fields_to_extract:
+                values = []
+                for sample_str in sample_fields:
+                    parts = sample_str.split(":")
+                    raw_value = parts[format_index[field]] if field in format_index and len(parts) > format_index[field] else None
+                    if field == "GT":
+                        key = raw_value if raw_value is not None else "."
+                        val = gt_map.get(key, np.nan) if use_gt_map else raw_value
+                    elif field == "AD":
+                        try:
+                            val = tuple(map(int, raw_value.split(","))) if raw_value and "," in raw_value else np.nan
+                        except:
+                            val = np.nan
+                    else:
+                        try:
+                            val = float(raw_value) if (raw_value is not None and raw_value != ".") else np.nan
+                        except:
+                            val = np.nan
+                    values.append(val)
+                per_sample = dict(zip(vcf_samples, values))
+                for s in sample_ids:
+                    result[field][s].append(per_sample.get(s, np.nan))
 
-    proc.stdout.close()
+        proc.stdout.close()
     proc.wait()
 
     shutil.rmtree(tmp_dir)
@@ -270,7 +286,6 @@ def extract_format_matrices_to_disk(
     return result
 
 def write_matrix_chunk_v2(output_path, sample_ids, loci_chunk, data_dict, append=False):
-    import gzip
     mode = "at" if append else "wt"
     with gzip.open(output_path, mode) as out:
         if not append:
@@ -288,17 +303,37 @@ def write_matrix_chunk_v2(output_path, sample_ids, loci_chunk, data_dict, append
                 row.append(val_str)
             out.write("\t".join(row) + "\n")
 
-def process_vcf_in_chunks(vcf_path, sample_ids, variant_ids, output_prefix, format_fields_to_extract, num_threads):
+def merge_matrix_chunks(output_path, sample_ids, all_loci, chunk_paths):
+    with gzip.open(output_path, "wt") as out:
+        out.write("sample_id\t" + "\t".join(all_loci) + "\n") #写入所有列名
+        for sid in sample_ids:
+            row = [sid]
+            for tmp_path in chunk_paths:
+                with gzip.open(tmp_path, "rt") as f:
+                    header = f.readline()
+                    found = False
+                    for line in f:
+                        if line.startswith(sid + "\t"): # 找到对应样本的行
+                            row.extend(line.strip().split("\t")[1:]) # 添加对应样本的值
+                            found = True
+                            break
+                    if not found:
+                        row.extend([""] * (len(header.strip().split("\t")) - 1))
+            out.write("\t".join(row) + "\n") # 写入每个样本的行数据
+
+
+# === 并行块处理与合并优化实现 ===
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def process_vcf_in_chunks_parallel(vcf_path, sample_ids, variant_ids, output_prefix, format_fields_to_extract, num_threads):
     chunk_size = 10000
     n = len(variant_ids)
-    for field in format_fields_to_extract:
-        output_path = f"{chr}.{output_prefix}.{field}.tsv.gz"
-        # Remove file if exists to start fresh
-        if os.path.exists(output_path):
-            os.remove(output_path)
+    tmp_dir = tempfile.mkdtemp(prefix="matrix_chunk_")
 
-    for i in range(0, n, chunk_size):
-        loci_chunk = variant_ids[i:i+chunk_size]
+    chunk_files_by_field = {field: {} for field in format_fields_to_extract}
+    loci_chunks = {}
+
+    def process_chunk(i, loci_chunk):
         data = extract_format_matrices_to_disk(
             vcf_path=vcf_path,
             sample_ids=sample_ids,
@@ -307,29 +342,63 @@ def process_vcf_in_chunks(vcf_path, sample_ids, variant_ids, output_prefix, form
             use_gt_map=True,
             num_threads=num_threads
         )
-        # write chunk to output files
-        for idx_field, field in enumerate(format_fields_to_extract):
-            output_path = f"{chr}.{output_prefix}.{field}.tsv.gz"
-            append = (i != 0)
-            write_matrix_chunk_v2(output_path, sample_ids, loci_chunk, data[field], append=append)
-        print(f"[✓] Processed chunk {i//chunk_size + 1} / {(n + chunk_size - 1)//chunk_size} for {output_prefix}")
+        paths = {}
+        for field in format_fields_to_extract:
+            tmp_path = os.path.join(tmp_dir, f"{field}.chunk{i}.tmp.gz")
+            write_matrix_chunk_v2(tmp_path, sample_ids, loci_chunk, data[field], append=False)
+            paths[field] = tmp_path
+        return i, loci_chunk, paths
 
-# %%
-process_vcf_in_chunks(
-    vcf_path=call_vcf_path,
-    sample_ids=shared_samples,
-    variant_ids=shared_variant_ids,
-    output_prefix=call_prefix,
-    format_fields_to_extract=args.call_format_fields,
-    num_threads=args.num_threads
-)
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = []
+        for i in range(0, n, chunk_size):
+            loci_chunk = variant_ids[i:i+chunk_size]
+            loci_chunks[i] = loci_chunk
+            futures.append(executor.submit(process_chunk, i, loci_chunk))
+        for future in as_completed(futures):
+            i, loci_chunk, paths = future.result()
+            for field in format_fields_to_extract:
+                chunk_files_by_field[field][i] = paths[field]
 
-# %%
-process_vcf_in_chunks(
-    vcf_path=true_vcf_path,
-    sample_ids=shared_samples,
-    variant_ids=shared_variant_ids,
-    output_prefix=true_prefix,
-    format_fields_to_extract=["GT"],
-    num_threads= args.num_threads
-)
+    def merge_chunks_for_field(field):
+        output_path = f"{chr}.{output_prefix}.{field}.tsv.gz"
+        sorted_indices = sorted(chunk_files_by_field[field].keys())
+        chunk_paths = [chunk_files_by_field[field][i] for i in sorted_indices]
+        for tmp_path in chunk_paths:
+            if not os.path.exists(tmp_path):
+                raise FileNotFoundError(f"Missing chunk file: {tmp_path}")
+        all_loci = []
+        for i in sorted_indices:
+            all_loci.extend(loci_chunks[i])
+        merge_matrix_chunks(output_path, sample_ids, all_loci, chunk_paths)
+
+    merge_threads = min(num_threads, len(format_fields_to_extract))
+    with ThreadPoolExecutor(max_workers=merge_threads) as merge_executor:
+        merge_futures = [merge_executor.submit(merge_chunks_for_field, field) for field in format_fields_to_extract]
+        for f in as_completed(merge_futures):
+            f.result()
+
+    shutil.rmtree(tmp_dir)
+
+# 并发处理call_vcf和true_vcf
+with ThreadPoolExecutor(max_workers=2) as outer_executor:
+    f_call = outer_executor.submit(
+        process_vcf_in_chunks_parallel,
+        call_vcf_path,
+        shared_samples,
+        shared_variant_ids,
+        call_prefix,
+        args.call_format_fields,
+        args.num_threads
+    )
+    f_true = outer_executor.submit(
+        process_vcf_in_chunks_parallel,
+        true_vcf_path,
+        shared_samples,
+        shared_variant_ids,
+        true_prefix,
+        ["GT"],
+        args.num_threads
+    )
+    f_call.result()
+    f_true.result()
