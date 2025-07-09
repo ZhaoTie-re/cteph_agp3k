@@ -1,0 +1,235 @@
+<mxfile host="65bd71144e">
+    <diagram id="8U3N8FmT9Z4xcl5KCpC_" name="Page-1">
+        <mxGraphModel dx="6274" dy="816" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="4681" pageHeight="3300" math="1" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="3" value="&lt;pre&gt;&lt;font face=&quot;Helvetica&quot;&gt;Stage 1: Initial Variant Filtering (Pre-QC)&lt;span style=&quot;background-color: transparent;&quot;&gt;&amp;nbsp;&amp;nbsp;&lt;/span&gt;&lt;/font&gt;&lt;/pre&gt;" style="swimlane;whiteSpace=wrap;html=1;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;" parent="1" vertex="1">
+                    <mxGeometry x="275.5" y="20" width="470" height="120" as="geometry">
+                        <mxRectangle x="150" y="190" width="140" height="30" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="4" value="&lt;ul&gt;&lt;li&gt;&lt;font style=&quot;&quot; face=&quot;Helvetica&quot;&gt;Remove low-confidence WGS variants using (Check Distribution):&lt;/font&gt;&lt;/li&gt;&lt;ul&gt;&lt;li&gt;&lt;font style=&quot;font-weight: normal;&quot; face=&quot;Helvetica&quot;&gt;Variant Quality Score Recalibration (VQSLOD &amp;gt; 10)&lt;/font&gt;&lt;/li&gt;&lt;li&gt;&lt;font style=&quot;font-weight: normal;&quot; face=&quot;Helvetica&quot;&gt;Mapping Quality (MQ &amp;gt; 58.75)&lt;/font&gt;&lt;/li&gt;&lt;/ul&gt;&lt;/ul&gt;" style="text;whiteSpace=wrap;html=1;fontStyle=1;fontFamily=Courier New;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;align=left;" parent="3" vertex="1">
+                    <mxGeometry x="29.5" y="20" width="430" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="6" value="Stage 2: Local Genotype Consistency Metrics Evalution" style="swimlane;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="220" y="170" width="581" height="520" as="geometry"/>
+                </mxCell>
+                <mxCell id="78" value="" style="group;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;" parent="6" vertex="1" connectable="0">
+                    <mxGeometry x="10" y="20" width="552" height="520" as="geometry"/>
+                </mxCell>
+                <mxCell id="7" value="&lt;ul&gt;&lt;li&gt;&lt;b&gt;WGS–Array intersection matrix (local)&lt;/b&gt;&lt;/li&gt;&lt;li&gt;&lt;b&gt;Restrict to high-confidence Array genotype:&lt;/b&gt;&lt;/li&gt;&lt;ul&gt;&lt;li&gt;Sample-level: Sample call rate &amp;gt; 99%&lt;/li&gt;&lt;li&gt;Variant-level:&lt;/li&gt;&lt;ul&gt;&lt;li&gt;Variant call rate &amp;gt; 99%&lt;/li&gt;&lt;li&gt;Remove multi-allelic variants&lt;/li&gt;&lt;li&gt;chr1 ~ chr22&lt;/li&gt;&lt;li&gt;MAF &amp;gt; 0.01&lt;/li&gt;&lt;li&gt;AAF consistent with ToMMo&lt;/li&gt;&lt;/ul&gt;&lt;/ul&gt;&lt;li&gt;&lt;b&gt;Grid search over:&lt;/b&gt;&lt;/li&gt;&lt;ul&gt;&lt;li&gt;Genotype-level: DP, GQ, Lower Allele Fraction (LAF), Higher Allele Fraction (HAF)&lt;/li&gt;&lt;/ul&gt;&lt;/ul&gt;" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="78" vertex="1">
+                    <mxGeometry x="12" width="540" height="260" as="geometry"/>
+                </mxCell>
+                <mxCell id="75" value="" style="group;movable=1;resizable=1;rotatable=1;deletable=1;editable=1;locked=0;connectable=1;" parent="78" vertex="1" connectable="0">
+                    <mxGeometry y="220" width="530" height="300" as="geometry"/>
+                </mxCell>
+                <mxCell id="77" value="" style="group" parent="75" vertex="1" connectable="0">
+                    <mxGeometry x="-6" y="8" width="530" height="292" as="geometry"/>
+                </mxCell>
+                <mxCell id="38" value="" style="shape=table;startSize=0;container=1;collapsible=0;childLayout=tableLayout;fontSize=12;fontStyle=1" parent="77" vertex="1">
+                    <mxGeometry x="60" y="50" width="470" height="118" as="geometry"/>
+                </mxCell>
+                <mxCell id="39" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;fontStyle=1" parent="38" vertex="1">
+                    <mxGeometry width="470" height="32" as="geometry"/>
+                </mxCell>
+                <mxCell id="40" value="" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="39" vertex="1">
+                    <mxGeometry width="94" height="32" as="geometry">
+                        <mxRectangle width="94" height="32" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="41" value="Genotype Concordance" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="39" vertex="1">
+                    <mxGeometry x="94" width="94" height="32" as="geometry">
+                        <mxRectangle width="94" height="32" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="51" value="Genotype Miss Rate" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="39" vertex="1">
+                    <mxGeometry x="188" width="95" height="32" as="geometry">
+                        <mxRectangle width="95" height="32" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="42" value="False Positive Rate" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="39" vertex="1">
+                    <mxGeometry x="283" width="93" height="32" as="geometry">
+                        <mxRectangle width="93" height="32" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="71" value="False Negative Rate" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="39" vertex="1">
+                    <mxGeometry x="376" width="94" height="32" as="geometry">
+                        <mxRectangle width="94" height="32" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="43" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;fontStyle=1" parent="38" vertex="1">
+                    <mxGeometry y="32" width="470" height="28" as="geometry"/>
+                </mxCell>
+                <mxCell id="44" value="Local ALL" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="43" vertex="1">
+                    <mxGeometry width="94" height="28" as="geometry">
+                        <mxRectangle width="94" height="28" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="45" value="" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="43" vertex="1">
+                    <mxGeometry x="94" width="94" height="28" as="geometry">
+                        <mxRectangle width="94" height="28" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="52" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="43" vertex="1">
+                    <mxGeometry x="188" width="95" height="28" as="geometry">
+                        <mxRectangle width="95" height="28" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="46" value="" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="43" vertex="1">
+                    <mxGeometry x="283" width="93" height="28" as="geometry">
+                        <mxRectangle width="93" height="28" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="72" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="43" vertex="1">
+                    <mxGeometry x="376" width="94" height="28" as="geometry">
+                        <mxRectangle width="94" height="28" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="47" value="" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;fontStyle=1" parent="38" vertex="1">
+                    <mxGeometry y="60" width="470" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="48" value="Local 30x" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="47" vertex="1">
+                    <mxGeometry width="94" height="30" as="geometry">
+                        <mxRectangle width="94" height="30" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="49" value="" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="47" vertex="1">
+                    <mxGeometry x="94" width="94" height="30" as="geometry">
+                        <mxRectangle width="94" height="30" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="53" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="47" vertex="1">
+                    <mxGeometry x="188" width="95" height="30" as="geometry">
+                        <mxRectangle width="95" height="30" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="50" value="" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="47" vertex="1">
+                    <mxGeometry x="283" width="93" height="30" as="geometry">
+                        <mxRectangle width="93" height="30" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="73" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="47" vertex="1">
+                    <mxGeometry x="376" width="94" height="30" as="geometry">
+                        <mxRectangle width="94" height="30" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="66" style="shape=tableRow;horizontal=0;startSize=0;swimlaneHead=0;swimlaneBody=0;strokeColor=inherit;top=0;left=0;bottom=0;right=0;collapsible=0;dropTarget=0;fillColor=none;points=[[0,0.5],[1,0.5]];portConstraint=eastwest;fontSize=12;fontStyle=1" parent="38" vertex="1">
+                    <mxGeometry y="90" width="470" height="28" as="geometry"/>
+                </mxCell>
+                <mxCell id="67" value="Local 15X" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="66" vertex="1">
+                    <mxGeometry width="94" height="28" as="geometry">
+                        <mxRectangle width="94" height="28" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="68" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="66" vertex="1">
+                    <mxGeometry x="94" width="94" height="28" as="geometry">
+                        <mxRectangle width="94" height="28" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="69" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="66" vertex="1">
+                    <mxGeometry x="188" width="95" height="28" as="geometry">
+                        <mxRectangle width="95" height="28" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="70" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="66" vertex="1">
+                    <mxGeometry x="283" width="93" height="28" as="geometry">
+                        <mxRectangle width="93" height="28" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="74" style="shape=partialRectangle;html=1;whiteSpace=wrap;connectable=0;strokeColor=inherit;overflow=hidden;fillColor=none;top=0;left=0;bottom=0;right=0;pointerEvents=1;fontSize=12;fontStyle=1" parent="66" vertex="1">
+                    <mxGeometry x="376" width="94" height="28" as="geometry">
+                        <mxRectangle width="94" height="28" as="alternateBounds"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="76" value="&lt;ul&gt;&lt;li&gt;&lt;b&gt;Evaluate local trade-off between (Optional):&lt;/b&gt;&lt;/li&gt;&lt;ul&gt;&lt;li&gt;Genotype Concordance&lt;/li&gt;&lt;li&gt;Genotype Miss Rate&lt;/li&gt;&lt;/ul&gt;&lt;/ul&gt;" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="77" vertex="1">
+                    <mxGeometry x="18" y="170" width="310" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="62" value="&lt;ul&gt;&lt;li&gt;&lt;font face=&quot;Helvetica&quot;&gt;&lt;b&gt;Calculate g&lt;span style=&quot;color: black;&quot;&gt;enotype consistency metrics&amp;nbsp;&lt;/span&gt;&lt;/b&gt;&lt;/font&gt;&lt;/li&gt;&lt;/ul&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="75" vertex="1">
+                    <mxGeometry y="10" width="300" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="61" value="" style="endArrow=classic;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="3" target="6" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="850.0033333333305" y="90" as="sourcePoint"/>
+                        <mxPoint x="1051.67" y="190" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="79" value="Stage 3: Local Genotype Consistency Validation" style="swimlane;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="-8" y="720" width="1037" height="430" as="geometry"/>
+                </mxCell>
+                <mxCell id="eODVQNMGtfNJkioT4E4J-79" value="&lt;ul style=&quot;text-align: left;&quot;&gt;&lt;li&gt;&lt;b&gt;WGS–Array intersection matrix (local)&lt;/b&gt;&lt;/li&gt;&lt;li&gt;&lt;b&gt;Validation Logit&lt;/b&gt;&lt;/li&gt;&lt;/ul&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Helvetica;fontSize=12;fontColor=default;" parent="79" vertex="1">
+                    <mxGeometry x="-18" y="10" width="280" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="N7_mkgsrad50ErjP7LUE-79" value="&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\textbf{Platform-specific Genotype Consistency Metrics:}\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\text{For parameter } \boldsymbol{\theta} = (\text{DP}, \text{GQ}, \text{LAF}, \text{HAF})\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\text{Consistency}_{15X}^{\text{local}}(\boldsymbol{\theta})\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\text{Consistency}_{30X}^{\text{local}}(\boldsymbol{\theta})\)&lt;/font&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Helvetica;fontSize=12;fontColor=default;dashed=1;rounded=1;arcSize=16;" parent="79" vertex="1">
+                    <mxGeometry x="17" y="80" width="460" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="9YAMM4m1q-vV5Q4zW8u_-79" value="&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\textbf{Local Sample Proportions:}\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(p_{15X}^{\text{local}} = \frac{n_{15X}^{\text{local}}}{n_{15X}^{\text{local}} + n_{30X}^{\text{local}}}\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(p_{30X}^{\text{local}} = \frac{n_{30X}^{\text{local}}}{n_{15X}^{\text{local}} + n_{30X}^{\text{local}}}\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 9px;&quot; color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Helvetica;fontSize=12;fontColor=default;dashed=1;glass=0;shadow=0;rounded=1;arcSize=24;" parent="79" vertex="1">
+                    <mxGeometry x="537" y="80" width="510" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="vT_qNB_NnREo19xz4tkL-79" value="&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot;&gt;\(\textbf{Expected Local Genotype Consistency:}\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;&amp;nbsp;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\text{ExpectedConsistency}^{\text{local}}(\boldsymbol{\theta}) = p_{15X}^{\text{local}} \cdot \text{Consistency}_{15X}^{\text{local}}(\boldsymbol{\theta}) + p_{30X}^{\text{local}} \cdot \text{Consistency}_{30X}^{\text{local}}(\boldsymbol{\theta})\)&lt;/font&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Helvetica;fontSize=12;fontColor=default;" parent="79" vertex="1">
+                    <mxGeometry x="-353" y="220" width="1200" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="UmxKLcg6jyb-rUaQMxyM-79" value="&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\textbf{Observed Local Genotype Consistency:}\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\text{ObservedConsistency}^{\text{local}}(\boldsymbol{\theta}) = \text{Genotype consistency of all local samples under } \boldsymbol{\theta}\)&lt;/font&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Helvetica;fontSize=12;fontColor=default;" parent="79" vertex="1">
+                    <mxGeometry x="437" y="220" width="710" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="j0XYsdZJ894xV05qrIqr-79" value="&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\textbf{Validation:}\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\text{If } \text{ObservedConsistency}^{\text{local}}(\boldsymbol{\theta}) \approx \text{ExpectedConsistency}^{\text{local}}(\boldsymbol{\theta})\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\Rightarrow \text{Platform-compositional expectation holds}\)&lt;/font&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Helvetica;fontSize=12;fontColor=default;" parent="79" vertex="1">
+                    <mxGeometry x="158.5" y="320" width="720" height="90" as="geometry"/>
+                </mxCell>
+                <mxCell id="j0XYsdZJ894xV05qrIqr-83" value="" style="endArrow=classic;html=1;fontFamily=Helvetica;fontSize=12;fontColor=default;autosize=1;resizable=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="6" target="79" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="570" y="620" as="sourcePoint"/>
+                        <mxPoint x="620" y="570" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="BNFqxmIFnhx2oiVevb6w-85" value="Stage 4: Global Genotype Consistency Projection &amp;amp; Genotype Parameter Tuning (Round 1 Tuning)" style="swimlane;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="-76" y="1190" width="1173" height="460" as="geometry"/>
+                </mxCell>
+                <mxCell id="BNFqxmIFnhx2oiVevb6w-86" value="&lt;ul style=&quot;text-align: left;&quot;&gt;&lt;li&gt;&lt;b&gt;WGS matrix (global)&lt;/b&gt;&lt;/li&gt;&lt;li&gt;&lt;b&gt;Projection Logit&lt;/b&gt;&lt;/li&gt;&lt;/ul&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Helvetica;fontSize=12;fontColor=default;" parent="BNFqxmIFnhx2oiVevb6w-85" vertex="1">
+                    <mxGeometry x="-18" y="20" width="180" height="80" as="geometry"/>
+                </mxCell>
+                <mxCell id="BNFqxmIFnhx2oiVevb6w-93" value="&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\textbf{Platform-specific Genotype Consistency Metrics:}\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\text{For parameter } \boldsymbol{\theta} = (\text{DP}, \text{GQ}, \text{LAF}, \text{HAF})\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\text{Consistency}_{15X}^{\text{local}}(\boldsymbol{\theta})\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font style=&quot;font-size: 11px;&quot; color=&quot;#000000&quot;&gt;\(\text{Consistency}_{30X}^{\text{local}}(\boldsymbol{\theta})\)&lt;/font&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Helvetica;fontSize=12;fontColor=default;dashed=1;rounded=1;arcSize=16;" parent="BNFqxmIFnhx2oiVevb6w-85" vertex="1">
+                    <mxGeometry x="20" y="90" width="460" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="v5CzWVJ53QZHJQIjBPVx-79" value="&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;\(\textbf{Global Sample Proportions:}\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;\(p_{15X}^{\text{global}} = \frac{n_{15X}^{\text{global}}}{n_{15X}^{\text{global}} + n_{30X}^{\text{global}}}\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;\(p_{30X}^{\text{global}} = \frac{n_{30X}^{\text{global}}}{n_{15X}^{\text{global}} + n_{30X}^{\text{global}}}\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Helvetica;fontSize=12;fontColor=default;" parent="BNFqxmIFnhx2oiVevb6w-85" vertex="1">
+                    <mxGeometry x="458" y="90" width="580" height="110" as="geometry"/>
+                </mxCell>
+                <mxCell id="9yCHhXEUFKasGd7yPlq5-79" value="&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;\(\textbf{Projected Global Genotype Consistency:}\)&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;&lt;br&gt;&lt;/font&gt;&lt;/div&gt;&lt;div&gt;&lt;font color=&quot;#000000&quot;&gt;\(\text{EstimatedConsistency}^{\text{global}}(\boldsymbol{\theta}) = p_{15X}^{\text{global}} \cdot \text{Consistency}_{15X}^{\text{local}}(\boldsymbol{\theta}) + p_{30X}^{\text{global}} \cdot \text{Consistency}_{30X}^{\text{local}}(\boldsymbol{\theta})\)&lt;/font&gt;&lt;/div&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Helvetica;fontSize=12;fontColor=default;" parent="BNFqxmIFnhx2oiVevb6w-85" vertex="1">
+                    <mxGeometry x="-112" y="240" width="1330" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="9yCHhXEUFKasGd7yPlq5-81" value="&lt;ul&gt;&lt;li&gt;&lt;b&gt;Evaluate global trade-off between:&lt;/b&gt;&lt;/li&gt;&lt;ul&gt;&lt;li&gt;Estimated Genotype Concordance&lt;/li&gt;&lt;li&gt;Estimated Genotype Miss Rate&lt;/li&gt;&lt;/ul&gt;&lt;li&gt;&lt;b&gt;Validate:&lt;/b&gt;&lt;/li&gt;&lt;ul&gt;&lt;li&gt;&lt;b&gt;&lt;u&gt;Apply selected parameters (DP, GQ, LAF,HAF) to global genotype matrix&lt;/u&gt;&lt;/b&gt;&lt;/li&gt;&lt;li&gt;Check the AAF in shared variants between global &amp;amp; local&amp;nbsp;&lt;/li&gt;&lt;/ul&gt;&lt;/ul&gt;" style="text;html=1;align=left;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;" parent="BNFqxmIFnhx2oiVevb6w-85" vertex="1">
+                    <mxGeometry y="300" width="510" height="160" as="geometry"/>
+                </mxCell>
+                <mxCell id="9yCHhXEUFKasGd7yPlq5-80" value="" style="endArrow=classic;html=1;fontFamily=Helvetica;fontSize=12;fontColor=default;autosize=1;resizable=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="79" target="BNFqxmIFnhx2oiVevb6w-85" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="590" y="1020" as="sourcePoint"/>
+                        <mxPoint x="640" y="970" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="9yCHhXEUFKasGd7yPlq5-84" value="Stage 5: Global Sample &amp;amp; Variant Parameter Tuning (Round 2 Tuning)" style="swimlane;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="158.5" y="1690" width="705" height="360" as="geometry"/>
+                </mxCell>
+                <mxCell id="9yCHhXEUFKasGd7yPlq5-85" value="&lt;ul style=&quot;text-align: left;&quot;&gt;&lt;li&gt;&lt;b&gt;WGS matrix (global)&lt;/b&gt;&lt;/li&gt;&lt;li&gt;&lt;b&gt;Grid search over:&lt;/b&gt;&lt;/li&gt;&lt;ul&gt;&lt;li&gt;Sample-level:&lt;/li&gt;&lt;ul&gt;&lt;li&gt;SMISS threshold grid over {0.00, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1}&lt;/li&gt;&lt;li&gt;HET_F deviation grid over {1sd, 2sd, 3sd, 4sd, 5sd} (MAF &amp;gt; 0.05, LD-pruned SNPs)&lt;/li&gt;&lt;/ul&gt;&lt;li&gt;Variant-level:&lt;/li&gt;&lt;ul&gt;&lt;li&gt;VMISS threshold&amp;nbsp;&lt;span style=&quot;color: rgb(63, 63, 63);&quot;&gt;&amp;nbsp;grid over {0.00, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.08, 0.09, 0.1}&lt;/span&gt;&lt;/li&gt;&lt;ul&gt;&lt;li&gt;&lt;span style=&quot;color: rgb(63, 63, 63);&quot;&gt;HWE p-value (control-only, remove related based on PI_HAT&amp;gt;2, LD-pruned SNPs)&lt;/span&gt;&lt;/li&gt;&lt;ul&gt;&lt;li&gt;&lt;span style=&quot;color: rgb(63, 63, 63);&quot;&gt;Common (MAF ≥ 0.,05):&amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp;grid over {1e-4, 1e-5, 1e-6}&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span style=&quot;color: rgb(63, 63, 63);&quot;&gt;Low-frequency (0.01~0.05):&amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp;grid over {1e-3, 1e-4, 1e-5}&lt;br&gt;&lt;/span&gt;&lt;/li&gt;&lt;li&gt;&lt;span style=&quot;color: rgb(63, 63, 63);&quot;&gt;Rare (MAF &amp;lt; 0.01):&amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp; &amp;nbsp;no HWE filtering&lt;/span&gt;&lt;/li&gt;&lt;/ul&gt;&lt;/ul&gt;&lt;/ul&gt;&lt;/ul&gt;&lt;li&gt;&lt;b&gt;Evaluate global trade-off between:&lt;/b&gt;&lt;/li&gt;&lt;ul&gt;&lt;li&gt;Genotype matrix size (Sample × Variant)&lt;/li&gt;&lt;li&gt;AAF concordance in ctrl dataset (vs ToMMo) using MSE&amp;nbsp;&lt;/li&gt;&lt;/ul&gt;&lt;/ul&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Helvetica;fontSize=12;fontColor=default;" parent="9yCHhXEUFKasGd7yPlq5-84" vertex="1">
+                    <mxGeometry x="-5" y="30" width="620" height="320" as="geometry"/>
+                </mxCell>
+                <mxCell id="9yCHhXEUFKasGd7yPlq5-90" value="" style="endArrow=classic;html=1;fontFamily=Helvetica;fontSize=12;fontColor=default;autosize=1;resizable=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="BNFqxmIFnhx2oiVevb6w-85" target="9yCHhXEUFKasGd7yPlq5-84" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="450" y="1910" as="sourcePoint"/>
+                        <mxPoint x="500" y="1860" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="9yCHhXEUFKasGd7yPlq5-92" value="Stage 6: Fianl Filtering &amp;amp; Data Freeze" style="swimlane;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+                    <mxGeometry x="246" y="2080" width="530" height="300" as="geometry"/>
+                </mxCell>
+                <mxCell id="9yCHhXEUFKasGd7yPlq5-93" value="&lt;ul style=&quot;text-align: left;&quot;&gt;&lt;li&gt;&lt;b&gt;WGS matrix (global)&lt;/b&gt;&lt;/li&gt;&lt;li&gt;&lt;b&gt;Apply Sample &amp;amp; Variant parameter&lt;/b&gt;&lt;/li&gt;&lt;li&gt;&lt;b&gt;Remove:&lt;/b&gt;&lt;/li&gt;&lt;ul&gt;&lt;li&gt;Samples with:&lt;/li&gt;&lt;ul&gt;&lt;li&gt;High SMISS&lt;/li&gt;&lt;li&gt;High HET-F deviation&lt;/li&gt;&lt;li&gt;High PI_HAT (optional)&lt;/li&gt;&lt;li&gt;no-Hondo (BBJ projection)&lt;/li&gt;&lt;/ul&gt;&lt;li&gt;Variants with:&lt;/li&gt;&lt;ul&gt;&lt;li&gt;High VMISS&lt;/li&gt;&lt;li&gt;HWE failures in ctrl&lt;/li&gt;&lt;li&gt;AAF not consistency in ctrl (vs ToMMo)&lt;/li&gt;&lt;/ul&gt;&lt;/ul&gt;&lt;/ul&gt;" style="text;html=1;align=center;verticalAlign=middle;resizable=0;points=[];autosize=1;strokeColor=none;fillColor=none;fontFamily=Helvetica;fontSize=12;fontColor=default;" parent="9yCHhXEUFKasGd7yPlq5-92" vertex="1">
+                    <mxGeometry x="90" y="20" width="350" height="280" as="geometry"/>
+                </mxCell>
+                <mxCell id="9yCHhXEUFKasGd7yPlq5-94" value="" style="endArrow=classic;html=1;fontFamily=Helvetica;fontSize=12;fontColor=default;autosize=1;resizable=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;entryX=0.5;entryY=0;entryDx=0;entryDy=0;" parent="1" source="9yCHhXEUFKasGd7yPlq5-84" target="9yCHhXEUFKasGd7yPlq5-92" edge="1">
+                    <mxGeometry width="50" height="50" relative="1" as="geometry">
+                        <mxPoint x="500" y="2090" as="sourcePoint"/>
+                        <mxPoint x="550" y="2040" as="targetPoint"/>
+                    </mxGeometry>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
