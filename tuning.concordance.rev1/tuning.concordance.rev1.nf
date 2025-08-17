@@ -114,7 +114,7 @@ process ConcordanceVmissCalculator {
     sample_info = "${infoDir}/wgs_array_dp.csv"
     """
     source activate cteph_geno_pro
-    python ${params.scriptDir}/evaluate_genotype_concordance_and_vmiss.py \
+    python ${params.scriptDir}/evaluate_genotype_concordance_and_vmiss.rev3.py \
         --chr ${chr} \
         --global_dp ${dp} \
         --global_gq ${gq} \
@@ -163,7 +163,7 @@ process ConcordanceVmissSummary {
     script:
     """
     source activate cteph_geno_pro
-    python ${params.scriptDir}/genotype_concordance_vmiss.summary.py \
+    python ${params.scriptDir}/genotype_concordance_vmiss.summary.rev1.py \
         --chr ${chr} \
         --global_dp ${dp} \
         --global_gq ${gq} \
@@ -201,7 +201,7 @@ process MergeConcordanceVmiss {
     script:
     """
     source activate cteph_geno_pro
-    python ${params.scriptDir}/merge_concordance_results.py \
+    python ${params.scriptDir}/merge_concordance_results.rev1.py \
         --dp ${dp} \
         --gq ${gq} \
         --laf ${laf} \
@@ -228,7 +228,7 @@ process MergeConcordanceVmissSummary {
     script:
     """
     source activate cteph_geno_pro
-    python ${params.scriptDir}/genotype_concordance_vmiss.summary.py \
+    python ${params.scriptDir}/genotype_concordance_vmiss.summary.rev1.py \
         --chr ${tag} \
         --global_dp ${dp} \
         --global_gq ${gq} \

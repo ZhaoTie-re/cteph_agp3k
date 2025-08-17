@@ -1,14 +1,14 @@
-
 #!/usr/bin/env python3
 
 """
 脚本说明：
-该脚本用于合并多个染色体级别的.pkl文件中记录的混淆矩阵（confusion）和缺失率表（vmiss）。
+该脚本用于合并多个染色体级别的.pkl文件中记录的混淆矩阵（confusion）、缺失率表（vmiss）和样本缺失率表（smiss）。
 每个.pkl文件包含多个不同过滤参数组合（DP, GQ, LAF, HAF）下的结果。脚本会将其中
 参数值与命令行参数匹配的结果合并，并按照预设标签（ALL, 15X, 30X）分别保存。
 
 合并逻辑：
 - vmiss：按照“VARIANT_ID”列进行升序排序，排序规则为先按染色体编号（chr1–chr22），再按位点位置。
+- smiss：按“SAMPLE_ID”分组，汇总“SMISS_COUNT”和“TOTAL_VARIANT”，计算“SMISS_FREQ”。
 - confusion：将相同的 (CALL_GENOTYPE, TRUE_GENOTYPE) 键的计数累加。
 
 输入参数：
@@ -21,7 +21,7 @@
 输出：
 - 合并后的结果保存在一个.pkl文件中，文件名格式为：
   merged._DP{dp}_GQ{gq}_LAF{laf}_HAF{haf}_.pkl
-- 其中为每个标签（ALL, 15X, 30X）保存一个合并后的 vmss 表和 confusion 表。
+- 其中为每个标签（ALL, 15X, 30X）保存一个合并后的 vmss 表、smiss 表和 confusion 表。
 
 使用示例：
 python3 merge_concordance_results.py --dp 10 --gq 20 --laf 0.1 --haf 0.9 --input_chr_pkl chr1.pkl chr2.pkl ...
@@ -33,7 +33,7 @@ import pandas as pd
 from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor
 
-parser = argparse.ArgumentParser(description="Merge confusion and vmiss data from multiple .pkl files")
+parser = argparse.ArgumentParser(description="Merge confusion, vmiss and smiss data from multiple .pkl files")
 parser.add_argument('--dp', type=int, required=True)
 parser.add_argument('--gq', type=int, required=True)
 parser.add_argument('--laf', type=float, required=True)
@@ -41,7 +41,7 @@ parser.add_argument('--haf', type=float, required=True)
 parser.add_argument('--input_chr_pkl', nargs='+', required=True, help='List of input .pkl files (one per chromosome)')
 args = parser.parse_args()
 
-def merge_tag(tag, args, all_vmiss, all_confusion):
+def merge_tag(tag, args, all_vmiss, all_smiss, all_confusion):
     if all_vmiss[tag]:
         merged_vmiss_df = pd.concat(all_vmiss[tag], ignore_index=True)
         # 插入排序逻辑
@@ -52,6 +52,23 @@ def merge_tag(tag, args, all_vmiss, all_confusion):
             merged_vmiss_df.drop(columns=["__CHROM_INT", "__POS_INT"], inplace=True)
     else:
         merged_vmiss_df = pd.DataFrame()
+
+    if all_smiss[tag]:
+        smiss_merged_df = pd.concat(all_smiss[tag], ignore_index=True)
+        if not smiss_merged_df.empty:
+            smiss_agg_df = (
+                smiss_merged_df
+                .groupby("SAMPLE_ID", as_index=False)
+                .agg({
+                    "SMISS_COUNT": "sum",
+                    "TOTAL_VARIANT": "sum"
+                })
+            )
+            smiss_agg_df["SMISS_FREQ"] = smiss_agg_df["SMISS_COUNT"] / smiss_agg_df["TOTAL_VARIANT"]
+        else:
+            smiss_agg_df = pd.DataFrame()
+    else:
+        smiss_agg_df = pd.DataFrame()
 
     confusion_df_combined = pd.DataFrame([
         {"CALL_GENOTYPE": k[0], "TRUE_GENOTYPE": k[1], "COUNT": v}
@@ -65,7 +82,7 @@ def merge_tag(tag, args, all_vmiss, all_confusion):
         f'HAF{args.haf}',
         tag
     ])
-    return output_key, (merged_vmiss_df, confusion_df_combined)
+    return output_key, (merged_vmiss_df, smiss_agg_df, confusion_df_combined)
 
 
 
@@ -82,6 +99,7 @@ param_keys = {
 
 # === 初始化容器 ===
 all_vmiss = {tag: [] for tag in tags}
+all_smiss = {tag: [] for tag in tags}
 all_confusion = {tag: defaultdict(int) for tag in tags}
 
 # === 遍历pkl文件 ===
@@ -89,18 +107,20 @@ for pkl_file in args.input_chr_pkl:
     with open(pkl_file, "rb") as f:
         data = pickle.load(f)
 
-    for key, (vmiss_df, confusion_df) in data.items():
+    for key, (vmiss_df, smiss_df, confusion_df) in data.items():
         for tag, param_key in param_keys.items():
             if key == param_key:
                 if vmiss_df is not None:
                     all_vmiss[tag].append(vmiss_df)
+                if smiss_df is not None:
+                    all_smiss[tag].append(smiss_df)
                 if confusion_df is not None:
                     for _, row in confusion_df.iterrows():
                         tup = (row["CALL_GENOTYPE"], row["TRUE_GENOTYPE"])
                         all_confusion[tag][tup] += row["COUNT"]
 
 with ProcessPoolExecutor() as executor:
-    futures = [executor.submit(merge_tag, tag, args, all_vmiss, all_confusion) for tag in tags]
+    futures = [executor.submit(merge_tag, tag, args, all_vmiss, all_smiss, all_confusion) for tag in tags]
     merged_results_dict = dict(f.result() for f in futures)
 
 output_path = f"merged._DP{args.dp}_GQ{args.gq}_LAF{args.laf}_HAF{args.haf}_.pkl"

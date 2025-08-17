@@ -1,7 +1,7 @@
 # %%
 """
 脚本名称：evaluate_genotype_concordance_and_vmiss.py
-功能概述：评估WGS与array基因型一致性，并计算变体层面的缺失率（VMISS）
+功能概述：评估WGS与array基因型一致性，并计算样本和变体层面的缺失率（SMISS 和 VMISS）
 
 描述：
     读取WGS和array数据的基因型、测序深度（DP）、基因型质量（GQ）、等位基因比例（Allele Fraction, AF）等指标，
@@ -19,13 +19,14 @@
     - wgs_array_dp.csv: 样本测序深度信息（区分15x和30x）
 
 输出内容：
-    - results_dict：字典，键为参数组合，值为(vmiss_df, confusion_df)
-    - 保存文件名格式：
-      DP{dp}_GQ{gq}_LAF{low_af}_HAF{high_af}.pkl
+    - results_dict：字典，键为参数组合，值为 (vmiss_df, smiss_df, confusion_df)
+        * vmiss_df：每个变体的缺失计数和缺失率
+        * smiss_df：每个样本的缺失计数和缺失率
+        * confusion_df：WGS与array的一致性混淆矩阵
 
 注意事项：
     - 代码结构支持多进程加速
-    - 可扩展至更多质控指标（如PL, AD、GQmiss、sample-level missing等）
+    - 可扩展至更多质控指标（如PL, AD等）
 """
 # %%
 import multiprocessing as mp
@@ -92,6 +93,12 @@ sample_ids_30x = list(sample_ids_set & set(sample_ids_30x))
 
 # %%
 # === 顶层函数：可被多进程调用 ===
+# - 对指定样本子集和变体子集读取GT/DP/GQ/AF矩阵
+# - 应用设定的DP/GQ/AF阈值进行基因型过滤
+# - 基于过滤后数据：
+#     * 构建混淆矩阵（confusion_df）
+#     * 计算变体缺失率（vmiss_df）
+#     * 计算样本缺失率（smiss_df）
 def process_variant_block(cols, sample_ids_subset):
     try:
         usecols = ["sample_id"] + cols
@@ -119,24 +126,34 @@ def process_variant_block(cols, sample_ids_subset):
 
         vmiss_count = qc_gt.isna().sum()
         total_sample = qc_gt.shape[0]
-        vmiss_freq = (vmiss_count / total_sample).round(4)
         vmiss = pd.DataFrame({
             "VARIANT_ID": vmiss_count.index,
             "VMISS_COUNT": vmiss_count.values,
-            "TOTAL_SAMPLE": total_sample,
-            "VMISS_FREQ": vmiss_freq.values
+            "TOTAL_SAMPLE": total_sample
         })
 
-        return counts, vmiss
+        smiss_count = qc_gt.isna().sum(axis=1)
+        total_variant = qc_gt.shape[1]
+        smiss = pd.DataFrame({
+            "SAMPLE_ID": smiss_count.index,
+            "SMISS_COUNT": smiss_count.values,
+            "TOTAL_VARIANT": total_variant
+        })
+
+        return counts, vmiss, smiss
 
     except Exception as e:
         print(f"[ERROR] Failed on columns: {cols[:5]} → {e}")
         empty_conf = pd.DataFrame(columns=["CALL_GENOTYPE", "TRUE_GENOTYPE", "COUNT"])
-        empty_vmiss = pd.DataFrame(columns=["VARIANT_ID", "VMISS_COUNT", "TOTAL_SAMPLE", "VMISS_FREQ"])
-        return empty_conf, empty_vmiss
+        empty_vmiss = pd.DataFrame(columns=["VARIANT_ID", "VMISS_COUNT", "TOTAL_SAMPLE"])
+        empty_smiss = pd.DataFrame(columns=["SAMPLE_ID", "SMISS_COUNT", "TOTAL_VARIANT"])
+        return empty_conf, empty_vmiss, empty_smiss
 
 
 # === 执行函数 ===
+# - 针对 ALL/15X/30X 三组样本分别运行 process_variant_block 并聚合结果
+# - 聚合后对变体按位置排序，对样本按ID聚合计算缺失率
+# - 每组结果保存在 results_dict 中，key 为参数组合 + 样本组名
 results_dict = {}
 
 def run_and_save(name, sample_ids):
@@ -145,7 +162,7 @@ def run_and_save(name, sample_ids):
         results = pool.map(block_func, blocks)
 
     # === 合并结果 ===
-    confusion_tables, vmiss_tables = zip(*results)
+    confusion_tables, vmiss_tables, smiss_tables = zip(*results)
     confusion_df = pd.concat(confusion_tables, ignore_index=True)
     confusion_df = confusion_df.groupby(["CALL_GENOTYPE", "TRUE_GENOTYPE"], dropna=False).sum().reset_index()
 
@@ -155,6 +172,23 @@ def run_and_save(name, sample_ids):
     confusion_df["TRUE_GENOTYPE"] = confusion_df["TRUE_GENOTYPE"].map(format_value)
 
     vmiss_df = pd.concat(vmiss_tables, ignore_index=True)
+    vmiss_df = vmiss_df.groupby("VARIANT_ID", as_index=False).agg({
+        "VMISS_COUNT": "sum",
+        "TOTAL_SAMPLE": "first"
+    })
+    vmiss_df["VMISS_FREQ"] = (vmiss_df["VMISS_COUNT"] / vmiss_df["TOTAL_SAMPLE"]).round(4)
+    # === 变异位点排序（按位置升序）===
+    vmiss_df["__POS_INT"] = vmiss_df["VARIANT_ID"].str.split(":").str[1].astype(int)
+    vmiss_df.sort_values("__POS_INT", inplace=True)
+    vmiss_df.drop(columns="__POS_INT", inplace=True)
+    vmiss_df.reset_index(drop=True, inplace=True)
+
+    smiss_df = pd.concat(smiss_tables, ignore_index=True)
+    smiss_df = smiss_df.groupby("SAMPLE_ID", as_index=False).agg({
+        "SMISS_COUNT": "sum",
+        "TOTAL_VARIANT": "sum"
+    })
+    smiss_df["SMISS_FREQ"] = (smiss_df["SMISS_COUNT"] / smiss_df["TOTAL_VARIANT"]).round(4)
 
     # === 构建键 ===
     param_key = frozenset([
@@ -166,7 +200,7 @@ def run_and_save(name, sample_ids):
     ])
 
     # === 存入全局字典 ===
-    results_dict[param_key] = (vmiss_df, confusion_df)
+    results_dict[param_key] = (vmiss_df, smiss_df, confusion_df)
     print(f"[✓] Results stored in results_dict under key → {param_key}")
 
 

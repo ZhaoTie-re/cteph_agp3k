@@ -22,6 +22,7 @@ sample_qc_prefix = "sample.qc"
 sample_miss_cmd = [
     "/home/b/b37974/plink2",
     "--bfile", bed_prefix,
+    "--maf", "0.01",
     "--missing",
     "--out", f"{sample_qc_prefix}.miss",
     "--threads", str(args.threads)

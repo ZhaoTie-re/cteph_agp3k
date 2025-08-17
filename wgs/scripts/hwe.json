@@ -1,0 +1,14 @@
+{
+  "Rare Variant (<0.01)": {
+    "CTRL_HWE": null,
+    "CASE_HWE": null
+  },
+  "Low Frequency Variant (0.01~0.05)": {
+    "CTRL_HWE": 1e-06,
+    "CASE_HWE": null
+  },
+  "Common Variant (>0.05)": {
+    "CTRL_HWE": 1e-06,
+    "CASE_HWE": null
+  }
+}

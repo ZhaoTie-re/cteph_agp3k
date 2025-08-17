@@ -194,11 +194,11 @@ smiss_dict = dict(zip(smiss_df['IID'], smiss_df['F_MISS']))
 
 # ==== 设置权重：case = inf，control = 1 / F_MISS ====
 for n in G_all.nodes:
+    fmiss = smiss_dict.get(n, 0.001)  # 避免除 0
     if G_all.nodes[n]["status"] == "case":
-        G_all.nodes[n]["weight"] = float("inf")
+        G_all.nodes[n]["weight"] = 1e6 / fmiss  # case 权重极大，但仍由 F_MISS 决定
     else:
-        fmiss = smiss_dict.get(n, 0.001)  # 避免除 0
-        G_all.nodes[n]["weight"] = 1.0 / fmiss # the smaller the F_MISS, the larger the weight
+        G_all.nodes[n]["weight"] = 1.0 / fmiss  # control 正常权重
 
 # ==== 计算近似最小加权顶点覆盖 ====
 vc = min_weighted_vertex_cover(G_all, weight="weight")
