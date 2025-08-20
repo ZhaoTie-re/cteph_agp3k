@@ -25,6 +25,8 @@ python pca_qc_main.py \
     (no_high_ld_prefix, prune_in, prune_out, eigenvec_file, eigenval_file, eigenvec_allele_file)
   - plot_pca_pairwise_pdf(eigenvec_file, eigenval_file, case_prefix, case_name, control_name, output_pdf) -> 返回 pdf 路径
 - 在无显示环境的服务器上作图，使用 matplotlib 的 'Agg' 后端。
+
+作者: ZHAO TIE
 """
 
 from __future__ import annotations

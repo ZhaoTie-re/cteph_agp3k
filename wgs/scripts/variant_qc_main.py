@@ -29,6 +29,9 @@ HWE 阈值 JSON 示例（传给 --hwe_json）：
     --output_prefix cteph_agp3k.sqc \
     --threads 16 \
     --vmiss_threshold 0.05
+
+作者: ZHAO TIE
+
 """
 
 from __future__ import annotations

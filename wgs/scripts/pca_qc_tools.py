@@ -74,6 +74,8 @@
    ...     output_pdf="cteph_agp3k.pca_pairwise.pdf",
    ... )
 
+作者: ZHAO TIE
+
 【变更记录】
 - 2025-08-17：新增模块级中文文档；`plot_pca_pairwise_pdf` 明确保留 eigenvec 表头并规范化 `#FID`→`FID`；
                强化输入校验与异常提示；统一日志与绝对路径策略。

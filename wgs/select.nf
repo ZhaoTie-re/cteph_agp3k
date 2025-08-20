@@ -458,7 +458,7 @@ process RunVariantQC {
     file('*.png')
     file('*.log')
     tuple file('vmiss_pass_variants.tsv'), file('hwe_pass_variants.tsv'), file('pass_variants.tsv') into pass_variants_out
-    tuple file("*.bed"), file("*.bim"), file("*.fam") into variant_qc_out
+    tuple file("*.bed"), file("*.bim"), file("*.fam") into variant_qc_out, variant_qc_out_2
 
     script:
     bed_prefix = bed.baseName
@@ -488,6 +488,7 @@ process RunPCA {
 
     output:
     file('*.pdf')
+    file('*.log')
     tuple file('*.prune.in'), file('*.prune.out') into pca_prune_out
     tuple file('*.eigenvec'), file('*.eigenval'), file('*.eigenvec.allele') into pca_out
     tuple file('*.no_high_ld.bed'), file('*.no_high_ld.bim'), file('*.no_high_ld.fam') into no_high_ld_out
@@ -533,6 +534,141 @@ process PrepareBBJ {
         --bbj_bed_prefix ${bed_prefix} \
         --maf_threshold 0.05 \
         --threads 64 \
+    """
+}
+
+process RunBBJPCA {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '36h'
+    tag "RunBBJPCA"
+
+    publishDir "${params.cteph_agp3k_main}/bbj_projection/02.bbj_pca", mode: 'symlink'
+
+    input:
+    tuple file(bed), file(bim), file(fam) from bbj_prepare_out
+    val(infoPath) from params.infoPath
+
+    output:
+    file('*.log')
+    file('*.pdf')
+    tuple file("*.prune.in"), file("*.prune.out") into bbj_pca_prune_out
+    tuple file("*.no_high_ld.bed"), file("*.no_high_ld.bim"), file("*.no_high_ld.fam") into bbj_no_high_ld_out
+    tuple file("*.eigenvec"), file("*.eigenval"), file("*.eigenvec.allele"), file("*.acount") into bbj_pca_out
+    
+    script:
+    bed_prefix = bed.baseName
+    high_ld = "${infoPath}/high-LD-regions-hg38-GRCh38.txt"
+    """
+    source activate cteph_geno_pro
+    python ${params.scriptDir}/bbj_pca_main.py \
+        --bbj_bed_prefix ${bed_prefix} \
+        --output_prefix bbj.maf \
+        --high_ld ${high_ld} \
+        --threads 32
+    """
+}
+
+process RunBBJProjection {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '36h'
+    tag "RunBBJProjection"
+
+    publishDir "${params.cteph_agp3k_main}/bbj_projection/03.bbj_projection", mode: 'symlink'
+
+    input:
+    tuple file(my_bed), file(my_bim), file(my_fam) from no_high_ld_out
+    tuple file(bbj_bed), file(bbj_bim), file(bbj_fam) from bbj_no_high_ld_out
+    tuple file(bbj_prune_in), file(bbj_prune_out) from bbj_pca_prune_out
+    tuple file(bbj_eigenvec), file(bbj_eigenval), file(bbj_eigenvec_allele), file(bbj_acount) from bbj_pca_out
+
+    output:
+    file('*.log')
+    file('*.pdf')
+    tuple file('*.sscore'), file('*.sscore.vars') into bbj_projection_out
+
+    script:
+    my_bed_prefix = my_bed.baseName
+    bbj_bed_prefix = bbj_bed.baseName
+    """
+    source activate cteph_geno_pro
+    python ${params.scriptDir}/bbj_projection_main.py \
+        --my_bed_prefix ${my_bed_prefix} \
+        --bbj_bed_prefix ${bbj_bed_prefix} \
+        --bbj_prune_in ${bbj_prune_in} \
+        --my_prefix_out cteph_agp3k \
+        --bbj_prefix_out bbj \
+        --bbj_pca_acount ${bbj_acount} \
+        --bbj_pca_eigenvec_allele ${bbj_eigenvec_allele} \
+        --threads 32 \
+        --case_prefix PHOM \
+        --case_name CTEPH \
+        --control_name AGP3K
+    """
+}
+
+process BBJSampleKeep {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '36h'
+    tag "BBJSampleKeep"
+
+    publishDir "${params.outdir}/15.bbj_sample_keep", mode: 'symlink'
+
+    input:
+    tuple file(bed), file(bim), file(fam) from variant_qc_out_2
+    tuple file(sscore), file(sscore_vars) from bbj_projection_out
+
+    output:
+    file('*.log')
+    file('*.png')
+    file('*.txt')
+    tuple file("*.bed"), file("*.bim"), file("*.fam") into bbj_sample_keep_out
+
+    script:
+    bed_prefix = bed.baseName
+    """
+    source activate cteph_geno_pro
+    python ${params.scriptDir}/bbj_sample_keep_main.py \
+        --sscore_path ${sscore} \
+        --case_prefix PHOM \
+        --case_name CTEPH \
+        --control_name AGP3K \
+        --prefix_out cteph_agp3k \
+        --rect_xlim -0.028 0.016 \
+        --rect_ylim -0.024 0.033 \
+        --bed_prefix ${bed_prefix} \
+        --threads 32
+    """
+}
+
+process rmMAF0orVMISS1_repeat {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '36h'
+    tag "rmMAF0orVMISS1_repeat"
+
+    publishDir "${params.outdir}/16.rm_maf0_vmiss1_repeat", mode: 'symlink'
+
+    input:
+    tuple file(bed), file(bim), file(fam) from bbj_sample_keep_out
+
+    output:
+    file('*.log')
+    tuple file("*.bed"), file("*.bim"), file("*.fam") into rm_maf0_vmiss1_repeat_out
+    tuple file('maf0_or_vmiss1_variants.variant_ids.tsv'), file('maf0_or_vmiss1_variants.with_flags.tsv')
+
+    script:
+    bed_prefix = bed.baseName
+    output_prefix = "cteph_agp3k.sqc.vqc.bbj_sample_keep"
+    """
+    source activate cteph_geno_pro
+    python ${params.scriptDir}/variant_qc_rm_maf0_vmiss1.py \
+        --script_path ${params.scriptDir} \
+        --bed_prefix ${bed_prefix} \
+        --output_prefix ${output_prefix} \
+        --threads 32
     """
 }
 
