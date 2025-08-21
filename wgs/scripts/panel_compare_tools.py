@@ -4,6 +4,7 @@ import tempfile
 import csv
 import math
 import uuid
+from datetime import datetime
 from typing import Optional
 import concurrent.futures
 import pandas as pd
@@ -11,6 +12,8 @@ import numpy as np
 from itertools import islice
 from collections import defaultdict
 from typing import Dict, Tuple, Iterable
+import shutil
+import time
 
 
 def run_plink2_variant_qc_with_tommo(
@@ -21,7 +24,8 @@ def run_plink2_variant_qc_with_tommo(
     threads: int = 8,
     chunk_size: int = 500_000,
     max_workers: Optional[int] = None,
-    keep_temp: bool = False,
+    regions_chunk_lines: int = 50_000,
+    keep_tmp: bool = False,
 ) -> str:
     """
     模块函数：run_plink2_variant_qc_with_tommo
@@ -65,7 +69,9 @@ def run_plink2_variant_qc_with_tommo(
         读取 `variant_qc_summary` 的 pandas 分块大小。
     max_workers : Optional[int]
         并行运行 `bcftools query` 的最大并发数；默认等于 `min(4, 可用CPU)`。
-    keep_temp : bool
+    regions_chunk_lines : int
+        将每条染色体的 region 列表再按行数切分为小块，逐块执行 bcftools（默认 1,000,000 行/块），便于打印进度与控制单次调用规模。
+    keep_tmp : bool
         是否保留临时目录以便排错。
 
     返回
@@ -101,12 +107,23 @@ def run_plink2_variant_qc_with_tommo(
         return proc.returncode
 
     # 1) 临时工作目录 & 输出路径
-    workdir_obj = tempfile.TemporaryDirectory(prefix="tommo_merge_")
-    workdir = workdir_obj.name
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    workdir = os.path.abspath(os.path.join(os.getcwd(), f"tommo_merge_{ts}_{uuid.uuid4().hex[:8]}"))
+    os.makedirs(workdir, exist_ok=True)
     if output_path is None:
         base, _ = os.path.splitext(variant_qc_summary)
         output_path = base + ".variant_qc_with_tommo.tsv"
     _progress(f"临时目录: {workdir}")
+
+    # 进度日志文件（便于在 Nextflow /.command.log 之外进行追踪）
+    progress_log_path = os.path.join(workdir, "progress.log")
+    def _log(msg: str):
+        _progress(msg)
+        try:
+            with open(progress_log_path, 'a') as pf:
+                pf.write(msg + "\n")
+        except Exception:
+            pass
 
     # 2) 第一步：扫描 summary，按染色体写出 CHROM\tPOS 的 region 原始文件
     #    为避免高内存，占位文件按染色体拆分，并最终使用 `sort -u` 去重。
@@ -161,29 +178,74 @@ def run_plink2_variant_qc_with_tommo(
     def _run_bcftools_for_chrom(chrom: str) -> Tuple[str, str]:
         region_file = uniq_region_files[chrom]
         out_map = os.path.join(workdir, f"tommo.map.{chrom}.tsv")
+
+        # 将 region 文件按行数切分为小块，便于打印进度并缩短单次 bcftools 调用
+        parts_dir = os.path.join(workdir, f"regions.{chrom}.parts")
+        os.makedirs(parts_dir, exist_ok=True)
+        part_paths = []
+        with open(region_file, 'r') as fin:
+            part_idx = 0
+            buf = []
+            for ln, line in enumerate(fin, start=1):
+                buf.append(line)
+                if ln % regions_chunk_lines == 0:
+                    part_idx += 1
+                    p = os.path.join(parts_dir, f"part_{part_idx:05d}.tsv")
+                    with open(p, 'w') as fout:
+                        fout.writelines(buf)
+                    part_paths.append(p)
+                    buf.clear()
+            if buf:
+                part_idx += 1
+                p = os.path.join(parts_dir, f"part_{part_idx:05d}.tsv")
+                with open(p, 'w') as fout:
+                    fout.writelines(buf)
+                part_paths.append(p)
+        _log(f"[{chrom}] region 切分为 {len(part_paths)} 块（每块 ≤ {regions_chunk_lines:,} 行）")
+
+        # 清空/创建输出文件
+        open(out_map, 'wb').close()
+
         # 注意：部分环境中的 `bcftools query` 不支持 --threads。
-        # 为了同时获得多线程解压能力与兼容性，这里：
-        #   threads>1 时：使用管道 `bcftools view --threads N -R ... -Ou VCF | bcftools query -f FMT`
-        #   否则：直接 `bcftools query -R ... -f FMT VCF`。
-        if isinstance(threads, int) and threads > 1:
-            fmt_q = shlex.quote(fmt)
-            cmdline = (
-                f"{shlex.quote(bcftools_path)} view --threads {threads} -R {shlex.quote(region_file)} "
-                f"-Ou {shlex.quote(tommo_vcf_path)} | "
-                f"{shlex.quote(bcftools_path)} query -f {fmt_q} > {shlex.quote(out_map)}"
-            )
-            cmd = ["bash", "-lc", cmdline]
-            ret = _run_cmd(cmd)
-        else:
-            cmd = [
-                bcftools_path, "query",
-                "-R", region_file,
-                "-f", fmt,
-                tommo_vcf_path,
-            ]
-            ret = _run_cmd(cmd, stdout_path=out_map)
-        if ret != 0:
-            raise RuntimeError(f"bcftools query 失败: 染色体 {chrom}")
+        # 线程>1：`view --threads` 管道 + query；否则：直接 query。
+        t0 = time.time()
+        for i, p in enumerate(part_paths, start=1):
+            _log(f"[{chrom}] 处理 chunk {i}/{len(part_paths)}: {os.path.basename(p)}")
+            if isinstance(threads, int) and threads > 1:
+                fmt_q = shlex.quote(fmt)
+                cmdline = (
+                    f"{shlex.quote(bcftools_path)} view --threads {threads} -R {shlex.quote(p)} "
+                    f"-Ou {shlex.quote(tommo_vcf_path)} | "
+                    f"{shlex.quote(bcftools_path)} query -f {fmt_q} >> {shlex.quote(out_map)}"
+                )
+                cmd = ["bash", "-lc", cmdline]
+                ret = _run_cmd(cmd)
+            else:
+                cmd = [
+                    bcftools_path, "query",
+                    "-R", p,
+                    "-f", fmt,
+                    tommo_vcf_path,
+                ]
+                # 以追加方式写入
+                with open(out_map, 'ab') as fout:
+                    proc = subprocess.run(cmd, check=False, stdout=fout)
+                    ret = proc.returncode
+            if ret != 0:
+                raise RuntimeError(f"bcftools query 失败: 染色体 {chrom} 块 {i}/{len(part_paths)}")
+            # 进度条打印（文本版，适配日志文件）：
+            done = i
+            total = len(part_paths)
+            pct = done / total if total else 1.0
+            bar_len = 28
+            filled = int(bar_len * pct)
+            bar = '█' * filled + '-' * (bar_len - filled)
+            elapsed = time.time() - t0
+            rate = done / max(elapsed, 1e-6)
+            eta = int((total - done) / max(rate, 1e-9))
+            eta_m, eta_s = divmod(eta, 60)
+            _log(f"[{chrom}] [{bar}] {done}/{total} ({pct*100:.1f}%) 速率 {rate:.2f} chunk/s  预计剩余 {eta_m:02d}:{eta_s:02d}")
+
         return chrom, out_map
 
     if max_workers is None:
@@ -262,7 +324,7 @@ def run_plink2_variant_qc_with_tommo(
         # 轻量诊断：如需要可打印命中数（仅当存在需要键时）
         if needed_keys:
             hit_cnt = sum(1 for k in needed_keys if k in out)
-            _progress(f"[diag] {chrom}: 映射子集载入 {len(out):,} 条，命中 {hit_cnt:,} / {len(needed_keys):,}")
+            _log(f"[diag] {chrom}: 映射子集载入 {len(out):,} 条，命中 {hit_cnt:,} / {len(needed_keys):,}")
         return out
 
     # 分块读取原表，合并并写出
@@ -318,15 +380,16 @@ def run_plink2_variant_qc_with_tommo(
         _progress(f"已处理 {processed:,} 行")
 
     # 6) 清理或保留临时目录
-    if keep_temp:
-        _progress(f"保留临时目录: {workdir}")
+    if keep_tmp:
+        _log(f"保留临时目录: {workdir}")
     else:
         try:
-            workdir_obj.cleanup()
-        except Exception:
-            pass
+            shutil.rmtree(workdir)
+            _log(f"已清理临时目录: {workdir}")
+        except Exception as e:
+            _log(f"[warn] 清理临时目录失败: {workdir} -> {e}")
 
-    _progress(f"完成。输出: {output_path}")
+    _log(f"完成。输出: {output_path}")
     return output_path
 
 
@@ -367,6 +430,8 @@ def plot_tommo_panel_compare_pdf(
     theme: str = 'okabe_ito',
     page4_figsize: tuple = (14, 5),
     page4_wspace: float = 0.30,
+    snp_color: Optional[str] = None,
+    indel_color: Optional[str] = None,
 ):
     """
     函数名称：plot_tommo_panel_compare_pdf
@@ -390,6 +455,10 @@ def plot_tommo_panel_compare_pdf(
         第 4 页（直方图页）的整体画布尺寸（英寸）。建议与第 2～3 页一致以保持版式统一。
     - page4_wspace: float = 0.10
         第 4 页三幅直方图之间的水平间距（0~1，越大间距越大）。
+    - snp_color: Optional[str] = None
+        第 3 页中 SNP 点的颜色（默认依据 theme 使用配色，与 PASS/Non-PASS 颜色不同）。
+    - indel_color: Optional[str] = None
+        第 3 页中 InDel 点的颜色（默认依据 theme 使用配色，与 PASS/Non-PASS 颜色不同）。
 
     【分组定义（基于 CTRL_MAF）】
     - Rare Variant (<0.01)
@@ -427,10 +496,19 @@ def plot_tommo_panel_compare_pdf(
         pass_color = '#0072B2'     # blue
         nonpass_color = '#ff6f01'  # vermillion
         refline_color = '#CC0000'
+        # SNP/InDel 颜色（与 PASS/Non-PASS 区分开）
+        if snp_color is None:
+            snp_color = '#000000'   # black (max contrast on white)
+        if indel_color is None:
+            indel_color = '#CC79A7' # magenta (Okabe–Ito)
     else:
         pass_color = '#1f77b4'
         nonpass_color = '#ff7f0e'
         refline_color = 'red'
+        if snp_color is None:
+            snp_color = '#000000'   # black (max contrast)
+        if indel_color is None:
+            indel_color = '#9467bd'
 
     # marker and line sizes
     ms_pass = 16
@@ -616,21 +694,68 @@ def plot_tommo_panel_compare_pdf(
             titles_page2.append(title)
         _compose_three_pngs_to_pdf_page(png_paths_page2, titles_page2, page_title_suffix='')
 
-        # ===== 页面 3：三组散点（仅 PASS），每个分图先渲染为PNG =====
+        # ===== 页面 3：三组散点（仅 PASS；颜色=变异类型：SNP vs InDel），每个分图先渲染为PNG =====
         png_paths_page3 = []
         titles_page3 = []
+
+        def _classify_variant_type_from_vid(series_vid):
+            """根据 VARIANT_ID( CHROM:POS:REF:ALT ) 判断变异类型。
+            - 若 REF 和 ALT 均为单碱基且属于 {A,T,C,G} → 'SNP'
+            - 否则 → 'InDel'
+            返回同长度的 Series，值为 'SNP' 或 'InDel'。
+            """
+            atcg = {"A", "T", "C", "G"}
+            def _one(vid):
+                if not isinstance(vid, str):
+                    return 'InDel'
+                parts = vid.split(':', 3)
+                if len(parts) != 4:
+                    return 'InDel'
+                ref, alt = parts[2], parts[3]
+                # 严格按单碱基界定 SNP
+                if ref in atcg and alt in atcg and len(ref) == 1 and len(alt) == 1:
+                    return 'SNP'
+                return 'InDel'
+            return series_vid.apply(_one)
+
         for (title, g) in groups:
-            g_pass = g[g['TOMMO_FILTER'] == 'PASS']
-            g2 = _subset_for_scatter(g_pass)
+            # 仅 PASS
+            g_pass = g[g['TOMMO_FILTER'] == 'PASS'].copy()
+            # 仅保留绘图所需列，并移除缺失
+            cols_needed = ['VARIANT_ID', 'CTRL_AAF', 'TOMMO_AAF']
+            if not all(c in g_pass.columns for c in cols_needed):
+                png_paths_page3.append(None)
+                titles_page3.append(title + ' (PASS ToMMo)')
+                continue
+            g2 = g_pass[cols_needed].dropna()
+            if max_points is not None and len(g2) > max_points:
+                g2 = g2.sample(n=max_points, random_state=42)
             if g2.empty:
                 png_paths_page3.append(None)
                 titles_page3.append(title + ' (PASS ToMMo)')
                 continue
+
+            # 变异类型标注
+            g2 = g2.assign(TYPE=_classify_variant_type_from_vid(g2['VARIANT_ID']))
+            is_snp = (g2['TYPE'] == 'SNP')
+            is_indel = (g2['TYPE'] == 'InDel')
+
+            # 绘制（SNP 用 snp_color，InDel 用 indel_color）
             f_sc, ax_sc = plt.subplots(figsize=(6, 6))  # 方形画布
-            ax_sc.scatter(
-                g2['TOMMO_AAF'], g2['CTRL_AAF'], s=ms_pass, alpha=alpha_pass, linewidths=0,
-                color=pass_color, label='PASS in ToMMo', zorder=2
-            )
+            if is_snp.any():
+                ax_sc.scatter(
+                    g2.loc[is_snp, 'TOMMO_AAF'], g2.loc[is_snp, 'CTRL_AAF'],
+                    s=ms_pass, alpha=alpha_pass, linewidths=0,
+                    color=snp_color, label='SNP', zorder=3
+                )
+            if is_indel.any():
+                ax_sc.scatter(
+                    g2.loc[is_indel, 'TOMMO_AAF'], g2.loc[is_indel, 'CTRL_AAF'],
+                    s=ms_nonpass, alpha=alpha_nonpass, linewidths=0,
+                    color=indel_color, label='InDel', zorder=4
+                )
+
+            # 参考线 y=x（置于最上）
             ax_sc.plot([0, 1], [0, 1], linestyle=refline_ls, linewidth=refline_lw, color=refline_color, zorder=10)
             ax_sc.minorticks_on()
             ax_sc.legend(frameon=False, fontsize=9)
@@ -643,11 +768,13 @@ def plot_tommo_panel_compare_pdf(
             ax_sc.yaxis.set_major_locator(MaxNLocator(nbins=5))
             ax_sc.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
             f_sc.subplots_adjust(left=0.18, right=0.98, bottom=0.18, top=0.94)
-            out_png = os.path.join(pngdir, f"page3_{title.replace(' ', '_').replace('>', 'gt').replace('<', 'lt')}.png")
+
+            out_png = os.path.join(pngdir, f"page3_{title.replace(' ', '_').replace('>', 'gt').replace('<', 'lt')}_SNP_InDel.png")
             f_sc.savefig(out_png, dpi=png_dpi)
             plt.close(f_sc)
             png_paths_page3.append(out_png)
             titles_page3.append(title + ' (PASS ToMMo)')
+
         _compose_three_pngs_to_pdf_page(png_paths_page3, titles_page3, page_title_suffix='')
 
         # ===== 页面 4：三组直方图（仅 PASS，CTRL_AAF - TOMMO_AAF），保留为矢量 =====

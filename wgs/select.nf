@@ -672,6 +672,38 @@ process rmMAF0orVMISS1_repeat {
     """
 }
 
+process ToMMoPanelCompare {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '36h'
+    tag "ToMMoPanelCompare"
+
+    publishDir "${params.outdir}/17.tommo_panel_compare", mode: 'symlink'
+
+    input:
+    tuple file(bed), file(bim), file(fam) from rm_maf0_vmiss1_repeat_out
+    val(tommodir) from params.tommodir
+
+    output:
+    file('*.pdf')
+    file('*.variant_qc_summary.variant_qc_with_tommo.tsv') into tommo_panel_compare_out
+
+    script:
+    bed_prefix = bed.baseName
+    tommo_vcf_path = "${tommodir}/tommo-60kjpn-20240904-GRCh38-snvindel-af-autosome.norm.vcf.gz"
+    """
+    source activate cteph_geno_pro
+    python ${params.scriptDir}/panel_compare_main.py \
+        --bed_prefix ${bed_prefix} \
+        --tommo_vcf_path ${tommo_vcf_path} \
+        --threads 6 \
+        --chunk_size 500000 \
+        --max_workers 10 \
+        --output_prefix cteph_agp3k \
+        --regions_chunk_lines 500000
+    """
+}
+
 // process sqc_miss_het {
 //     executor 'slurm'
 //     queue 'gr10478b'
