@@ -8,287 +8,330 @@ from typing import Optional
 import concurrent.futures
 import pandas as pd
 import numpy as np
-import pysam
+from itertools import islice
+from collections import defaultdict
+from typing import Dict, Tuple, Iterable
 
-_global_lookup = {}
-
-def _parse_variant_id(vid: str):
-    """支持以下格式：
-    1) chr1:968384:G:A
-    2) 1:968384:G:A
-    3) chr1:968384_A_T
-    4) 1:968384_A_T
-    返回 (chrom, pos(int), ref, alt) 或 None
-    """
-    try:
-        if '_' in vid and ':' in vid:
-            # e.g. chr1:968384_A_T
-            chrom_pos, ref, alt = vid.split('_', 2)
-            chrom, pos_str = chrom_pos.split(':', 1)
-            return chrom, int(pos_str), ref, alt
-        # colon-delimited form
-        parts = vid.split(':')
-        if len(parts) >= 4:
-            chrom, pos_str, ref, alt = parts[0], parts[1], parts[2], parts[3]
-            return chrom, int(pos_str), ref, alt
-    except Exception:
-        return None
-    return None
-
-def _query_tommo(tabix: pysam.TabixFile, chrom: str, pos: int, ref: str, alt: str):
-    """查询ToMMo，返回 (IN_TOMMO(bool), TOMMO_AAF(float|nan), TOMMO_FILTER(str|nan))。
-    处理chr/非chr，以及多等位/多AF的对应关系。
-    """
-    if tabix is None:
-        return False, float("nan"), float("nan")
-    chrom_candidates = [chrom]
-    if chrom.startswith('chr'):
-        chrom_candidates.append(chrom[3:])
-    else:
-        chrom_candidates.append('chr' + chrom)
-    for c in chrom_candidates:
-        try:
-            for record in tabix.fetch(c, max(0, pos - 1), pos):
-                fields = record.split('\t')
-                vcf_pos = int(fields[1])
-                if vcf_pos != pos:
-                    continue
-                vcf_ref = fields[3]
-                if vcf_ref != ref:
-                    continue
-                vcf_alts = fields[4].split(',')
-                if alt not in vcf_alts:
-                    continue
-                alt_idx = vcf_alts.index(alt)
-                filter_field = fields[6]
-                info_field = fields[7]
-                af_val = float('nan')
-                for part in info_field.split(';'):
-                    if part.startswith('AF='):
-                        af_str = part.split('=', 1)[1]
-                        # AF 可能是逗号分隔，对应各ALT
-                        try:
-                            af_items = [float(x) if x not in ('', '.') else float('nan') for x in af_str.split(',')]
-                            if alt_idx < len(af_items):
-                                af_val = af_items[alt_idx]
-                        except Exception:
-                            af_val = float('nan')
-                        break
-                return True, af_val, filter_field
-        except Exception:
-            continue
-    return False, float('nan'), float('nan')
-
-def init_globals_for_chunk(vmiss_dict, case_aaf_dict, ctrl_aaf_dict, case_hwe_dict, ctrl_hwe_dict, tommo_vcf_path=None):
-    global _global_lookup
-    _global_lookup['vmiss_dict'] = vmiss_dict
-    _global_lookup['case_aaf_dict'] = case_aaf_dict
-    _global_lookup['ctrl_aaf_dict'] = ctrl_aaf_dict
-    _global_lookup['case_hwe_dict'] = case_hwe_dict
-    _global_lookup['ctrl_hwe_dict'] = ctrl_hwe_dict
-    if tommo_vcf_path is not None:
-        _global_lookup['tommo_tabix'] = pysam.TabixFile(tommo_vcf_path)
-    else:
-        _global_lookup['tommo_tabix'] = None
-
-def process_chunk(chunk, idx, tmpdir):
-    """
-    对变异数据块进行处理，将每个变异的QC指标提取并写入临时文件。
-
-    参数:
-        chunk (DataFrame): 当前数据块，包含多个变异的统计信息
-        idx (int): 数据块编号，用于命名输出文件
-        tmpdir (str): 临时目录路径，用于存放中间结果
-
-    返回:
-        str: 写入结果的临时文件路径
-    """
-    vmiss_dict = _global_lookup.get('vmiss_dict', {})
-    case_aaf_dict = _global_lookup.get('case_aaf_dict', {})
-    ctrl_aaf_dict = _global_lookup.get('ctrl_aaf_dict', {})
-    case_hwe_dict = _global_lookup.get('case_hwe_dict', {})
-    ctrl_hwe_dict = _global_lookup.get('ctrl_hwe_dict', {})
-    tommo_tabix = _global_lookup.get('tommo_tabix', None)
-
-    tmp_output = os.path.join(tmpdir, f"chunk_{idx}_{uuid.uuid4().hex}.tsv")
-    with open(tmp_output, "w", newline="") as fout:
-        writer = csv.writer(fout, delimiter="\t")
-        for _, row in chunk.iterrows():
-            vid = row["ID"]  # 变异ID
-            aaf = row["ALT_FREQS"]  # 等位基因频率
-            maf = min(aaf, 1 - aaf) if pd.notnull(aaf) else float("nan")  # 计算MAF
-            vmiss = vmiss_dict.get(vid, float("nan"))  # 缺失率VMISS
-            case_aaf = case_aaf_dict.get(vid, float("nan"))  # 病例组等位基因频率
-            ctrl_aaf = ctrl_aaf_dict.get(vid, float("nan"))  # 对照组等位基因频率
-            ctrl_maf = min(ctrl_aaf, 1 - ctrl_aaf) if pd.notnull(ctrl_aaf) else float("nan")  # 对照组MAF
-            case_hwe = case_hwe_dict.get(vid, float("nan"))  # 病例组HWE p值
-            ctrl_hwe = ctrl_hwe_dict.get(vid, float("nan"))  # 对照组HWE p值
-
-            IN_TOMMO = False
-            TOMMO_AAF = float("nan")
-            TOMMO_FILTER = float("nan")
-
-            if tommo_tabix is not None:
-                parsed = _parse_variant_id(vid)
-                if parsed is not None:
-                    chrom, pos, ref, alt = parsed
-                    IN_TOMMO, TOMMO_AAF, TOMMO_FILTER = _query_tommo(tommo_tabix, chrom, pos, ref, alt)
-
-            # 写入列顺序: 变异ID, MAF, VMISS, 病例组AAF, 对照组AAF, 对照组MAF, 病例组HWE p值, 对照组HWE p值, IN_TOMMO, TOMMO_AAF, TOMMO_FILTER
-            writer.writerow([vid, maf, vmiss, case_aaf, ctrl_aaf, ctrl_maf, case_hwe, ctrl_hwe, IN_TOMMO, TOMMO_AAF, TOMMO_FILTER])
-    return tmp_output
 
 def run_plink2_variant_qc_with_tommo(
-    bed_prefix: str,
-    tmpdir: str = "/tmp/variant_qc",
-    plink2_path: str = "/home/b/b37974/plink2",
+    variant_qc_summary: str,
+    tommo_vcf_path: str,
+    output_path: Optional[str] = None,
+    bcftools_path: str = "bcftools",
     threads: int = 8,
-    output_prefix: str = "cteph_agp3k",
-    verbose: bool = True,
-    tommo_vcf_path: str = "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/ToMMo_60KJPN/tommo-60kjpn-20240904-GRCh38-snvindel-af-autosome.norm.vcf.gz"
+    chunk_size: int = 500_000,
+    max_workers: Optional[int] = None,
+    keep_temp: bool = False,
 ) -> str:
     """
-    使用 plink2 对 Plink 格式基因型文件进行变异层面的QC计算。
+    模块函数：run_plink2_variant_qc_with_tommo
+    ========================================
+    【功能】
+    - 针对 *非常长* 的 `variant_qc_summary`（列含 VARIANT_ID=CHROM:POS:REF:ALT），
+      先根据 CHROM:POS 生成 bcftools 可读的 regions 文件（按染色体拆分并去重）；
+    - 并行调用 `bcftools query -R` 从 ToMMo VCF 中抽取位点信息，
+      使用 per-allele 展开格式确保按 REF/ALT 精确匹配；
+    - 以**流式分块**方式读取原表并合并 3 列：
+        * IN_TOMMO: bool（是否存在完全匹配的 CHROM:POS:REF:ALT）
+        * TOMMO_AAF: float（ToMMo 的 INFO/AF，对应 ALT 等位）
+        * TOMMO_FILTER: str（该记录的 FILTER）
+    - 最终写出 TSV（默认后缀 `.variant_qc_with_tommo.tsv`）。
 
-    输出字段包括：
-        - MAF（全部样本）
-        - VMISS（全部样本）
-        - CASE/CONTROL AAF
-        - CONTROL MAF
-        - CASE/CONTROL HWE P值
-        - ToMMo VCF注释: 是否存在, 等位基因频率, FILTER状态
+    【重要实现要点】
+    - regions 文件采用两列 1-based 的 `CHROM\tPOS`（**不要**混用 BED 坐标）。
+    - 使用 `bcftools query` 的 per-allele 展开：
+        格式串：`%CHROM\t%POS[\t%REF\t%ALT\t%FILTER\t%INFO/AF]\n`
+      方括号 `[]` 会对 ALT 逐等位展开，保证 REF/ALT 一一对应。
+    - 合并阶段不会把整张 ToMMo 或整张 summary 全部载入内存：
+        * 第一步仅生成每条染色体的去重位置列表（磁盘中转 + `sort -u` 去重）。
+        * 第二步对每条染色体独立 `bcftools query` 并写出中间映射表。
+        * 第三步**分块**读取 summary，分组到染色体后仅按需要的键子集
+          从映射表中"按需加载"对应的少量行，映射完成即丢弃。
+    - 染色体名需与 VCF 保持完全一致（例如 `chr20` ≠ `20`）。
 
-    参数:
-        bed_prefix (str): 输入文件的 Plink 数据前缀（.bed/.bim/.fam）
-        tmpdir (str): 临时目录路径，用于存放中间结果
-        plink2_path (str): plink2 执行路径
-        threads (int): 并行使用的线程数
-        output_prefix (str): 输出 QC 结果文件的前缀
-        verbose (bool): 是否打印进度信息
-        tommo_vcf_path (str): ToMMo VCF文件路径，用于注释变异频率和过滤状态
+    参数
+    ----
+    variant_qc_summary : str
+        `run_plink2_variant_qc` 产出的 `*.variant_qc_summary.tsv` 路径。
+    tommo_vcf_path : str
+        ToMMo 的 bgzip 压缩并建立 `.tbi` 索引的 VCF 路径。
+    output_path : Optional[str]
+        输出路径；默认与输入同名，后缀改为 `.variant_qc_with_tommo.tsv`。
+    bcftools_path : str
+        `bcftools` 可执行程序路径（默认走环境中的 `bcftools`）。
+    threads : int
+        传给 bcftools 的线程数（读写解压线程）。
+    chunk_size : int
+        读取 `variant_qc_summary` 的 pandas 分块大小。
+    max_workers : Optional[int]
+        并行运行 `bcftools query` 的最大并发数；默认等于 `min(4, 可用CPU)`。
+    keep_temp : bool
+        是否保留临时目录以便排错。
 
-    返回:
-        str: 输出 QC 汇总结果文件的路径（.variant_qc_with_tommo.tsv）
+    返回
+    ----
+    str
+        生成的 `variant_qc_summary_with_tommo` 的文件路径。
     """
+    import sys
+    import shlex
+    import tempfile
+    import pandas as pd
+    import numpy as np
+    import concurrent.futures
+    from collections import OrderedDict
 
-    # 确保 tmpdir 目录存在
-    if tmpdir is None:
-        tmpdir = tempfile.mkdtemp()
-    else:
-        os.makedirs(tmpdir, exist_ok=True)
-    if verbose:
-        print(f"[INFO] 使用临时目录: {tmpdir}")
+    def _progress(msg: str):
+        print(f"[run_plink2_variant_qc_with_tommo] {msg}", file=sys.stderr, flush=True)
 
-    def run_cmd(cmd, desc: Optional[str] = None):
-        if verbose and desc:
-            print(f"[INFO] 运行: {desc}")
-        try:
-            subprocess.run(cmd, check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"[ERROR] 命令运行失败: {' '.join(cmd)}")
-            raise e
+    def _parse_vid(vid: str) -> Tuple[str, int, str, str]:
+        # 期望形如 CHROM:POS:REF:ALT
+        parts = vid.split(":", 3)
+        if len(parts) != 4:
+            raise ValueError(f"VARIANT_ID 不是 CHROM:POS:REF:ALT 格式: {vid}")
+        chrom, pos, ref, alt = parts[0], parts[1], parts[2], parts[3]
+        return chrom, int(pos), ref, alt
 
-    # Step 1: freq + vmiss
-    out_all = os.path.join(tmpdir, "all_samples")
-    # 计算全体样本的等位基因频率和缺失率
-    run_cmd([
-        plink2_path, "--bfile", bed_prefix, "--threads", str(threads),
-        "--freq", "--missing", "--out", out_all
-    ], "全体样本 AAF + VMISS")
+    def _run_cmd(cmd_list: Iterable[str], stdout_path: str = None) -> int:
+        if stdout_path is None:
+            proc = subprocess.run(cmd_list, check=False)
+        else:
+            with open(stdout_path, "wb") as fo:
+                proc = subprocess.run(cmd_list, check=False, stdout=fo)
+        return proc.returncode
 
-    # Step 2: 分组 IID
-    fam_df = pd.read_csv(f"{bed_prefix}.fam", sep=r"\s+", header=None)
-    fam_df.columns = ["FID", "IID", "PID", "MID", "SEX", "PHENO"]
-    # 根据PHENO字段区分病例和对照样本ID
-    case_iids = fam_df[fam_df["PHENO"] == 2][["FID", "IID"]]
-    ctrl_iids = fam_df[fam_df["PHENO"] == 1][["FID", "IID"]]
+    # 1) 临时工作目录 & 输出路径
+    workdir_obj = tempfile.TemporaryDirectory(prefix="tommo_merge_")
+    workdir = workdir_obj.name
+    if output_path is None:
+        base, _ = os.path.splitext(variant_qc_summary)
+        output_path = base + ".variant_qc_with_tommo.tsv"
+    _progress(f"临时目录: {workdir}")
 
-    case_iid_path = os.path.join(tmpdir, "case_iids.txt")
-    ctrl_iid_path = os.path.join(tmpdir, "ctrl_iids.txt")
-    # 保存病例和对照样本ID，用于plink2的--keep参数
-    case_iids.to_csv(case_iid_path, sep="\t", index=False, header=False)
-    ctrl_iids.to_csv(ctrl_iid_path, sep="\t", index=False, header=False)
-
-    # Step 3: 分组 freq + HWE
-    out_case = os.path.join(tmpdir, "case")
-    out_ctrl = os.path.join(tmpdir, "ctrl")
-    # 计算病例组的等位基因频率和HWE检验
-    run_cmd([
-        plink2_path, "--bfile", bed_prefix, "--keep", case_iid_path,
-        "--threads", str(threads), "--freq", "--hardy", "--out", out_case
-    ], "Case AAF + HWE")
-
-    # 计算对照组的等位基因频率和HWE检验
-    run_cmd([
-        plink2_path, "--bfile", bed_prefix, "--keep", ctrl_iid_path,
-        "--threads", str(threads), "--freq", "--hardy", "--out", out_ctrl
-    ], "Control AAF + HWE")
-
-    # Step 4: load lookup tables
-    if verbose:
-        print("[INFO] 读取辅助统计表...")
-
-    # 读取全体样本缺失率字典
-    vmiss_dict = dict(pd.read_csv(out_all + ".vmiss", sep=r"\s+")[["ID", "F_MISS"]].values)
-    # 读取病例组等位基因频率字典
-    case_aaf_dict = dict(pd.read_csv(out_case + ".afreq", sep=r"\s+")[["ID", "ALT_FREQS"]].values)
-    # 读取对照组等位基因频率字典
-    ctrl_aaf_dict = dict(pd.read_csv(out_ctrl + ".afreq", sep=r"\s+")[["ID", "ALT_FREQS"]].values)
-
-    # 读取病例组和对照组HWE检验p值字典
-    hwe_case_df = pd.read_csv(out_case + ".hardy", sep=r"\s+")
-    hwe_ctrl_df = pd.read_csv(out_ctrl + ".hardy", sep=r"\s+")
-    case_hwe_dict = dict(hwe_case_df[["ID", "P"]].values)
-    ctrl_hwe_dict = dict(hwe_ctrl_df[["ID", "P"]].values)
-
-    # Step 5: parallel chunk processing
-    output_file = output_prefix + ".variant_qc_with_tommo.tsv"
-    if verbose:
-        test_chunk = pd.read_csv(out_all + ".afreq", sep=r"\s+", nrows=5)
-        print("[DEBUG] .afreq 字段名:", list(test_chunk.columns))
-
-
-    chunk_files = []
-    reader = pd.read_csv(out_all + ".afreq", sep=r"\s+", chunksize=10000)
-    with concurrent.futures.ProcessPoolExecutor(max_workers=10, initializer=init_globals_for_chunk,
-                                                initargs=(vmiss_dict, case_aaf_dict, ctrl_aaf_dict, case_hwe_dict, ctrl_hwe_dict, tommo_vcf_path)) as executor:
-        futures = []
-        for i, chunk in enumerate(reader):
-            if verbose:
-                print(f"[INFO] 正在提交 chunk {i + 1} 任务...")
-            futures.append(
-                executor.submit(
-                    process_chunk,
-                    chunk, i, tmpdir
-                )
+    # 2) 第一步：扫描 summary，按染色体写出 CHROM\tPOS 的 region 原始文件
+    #    为避免高内存，占位文件按染色体拆分，并最终使用 `sort -u` 去重。
+    region_tmp_files: Dict[str, str] = {}
+    # 以分块方式读取，只需要 VARIANT_ID 一列
+    reader = pd.read_csv(
+        variant_qc_summary, sep='\t', usecols=["VARIANT_ID"], dtype={"VARIANT_ID": "string"},
+        chunksize=chunk_size, engine='c'
+    )
+    total_rows = 0
+    for chunk in reader:
+        total_rows += len(chunk)
+        # 向量化解析 VARIANT_ID -> CHROM, POS
+        sp = chunk["VARIANT_ID"].str.split(":", n=3, expand=True)
+        sp.columns = ["CHROM", "POS", "REF", "ALT"]
+        sp = sp[["CHROM", "POS"]]
+        # 逐染色体写入（允许重复，后续 sort -u 去重）
+        for chrom, sub in sp.groupby("CHROM"):
+            path = region_tmp_files.get(chrom)
+            if path is None:
+                path = os.path.join(workdir, f"regions.{chrom}.tsv")
+                region_tmp_files[chrom] = path
+            # 只写两列，POS 按原始字符串即可（1-based）
+            sub[["CHROM", "POS"]].to_csv(
+                path, sep='\t', header=False, index=False, mode='a'
             )
-        for i, future in enumerate(futures):
-            chunk_file = future.result()
-            if verbose:
-                print(f"[INFO] chunk {i + 1} 处理完成，结果文件: {chunk_file}")
-            chunk_files.append(chunk_file)
+    _progress(f"已扫描 {total_rows:,} 行，生成 {len(region_tmp_files)} 个染色体 region 文件（未去重）")
 
-    # merge chunk files
-    with open(output_file, "w", newline="") as fout:
-        writer = csv.writer(fout, delimiter="\t")
-        # 写入表头
-        writer.writerow([
-            "VARIANT_ID", "MAF", "VMISS", "CASE_AAF",
-            "CTRL_AAF", "CTRL_MAF", "CASE_HWE", "CTRL_HWE",
-            "IN_TOMMO", "TOMMO_AAF", "TOMMO_FILTER"
-        ])
-        # 合并所有chunk的结果文件
-        for chunk_file in chunk_files:
-            with open(chunk_file, "r") as fin:
-                for line in fin:
-                    fout.write(line)
+    # 3) 对每个染色体的 region 文件做 sort -u 去重，得到 .uniq 文件
+    uniq_region_files: Dict[str, str] = {}
+    for chrom, raw_path in region_tmp_files.items():
+        uniq_path = os.path.join(workdir, f"regions.{chrom}.uniq.tsv")
+        # 使用系统 sort -u，按 (CHROM, POS) 去重并保证数值排序
+        # 注：LC_ALL=C 可显著加速排序
+        cmd = [
+            "bash", "-lc",
+            f"LC_ALL=C sort -u -t$'\t' -k1,1 -k2,2n {shlex.quote(raw_path)} > {shlex.quote(uniq_path)}"
+        ]
+        ret = _run_cmd(cmd)
+        if ret != 0:
+            raise RuntimeError(f"sort -u 去重失败: {raw_path}")
+        uniq_region_files[chrom] = uniq_path
+    _progress("已完成每条染色体的 region 去重")
 
-    if verbose:
-        print(f"[INFO] 输出完成: {output_file}")
-        print(f"[INFO] 结果文件路径（可用于后续加载）: {output_file}")
-    return output_file
+    # 4) 并行运行 bcftools query 生成每条染色体的等位基因级映射表
+    #    输出格式：CHROM POS REF ALT FILTER AF（每行一条 ALT 等位）
+    mapping_files: Dict[str, str] = {}
+    # 注意：bcftools `[]` 迭代的是 FORMAT/样本字段，不是 ALT/INFO 数组；
+    # 因此这里打印 ALT 与 INFO/AF 的逗号分隔列表，后续在 Python 侧按等位一一展开。
+    fmt = "%CHROM\t%POS\t%REF\t%ALT\t%FILTER\t%INFO/AF\n"
 
-# new funtion to plot panel comapre results
+    def _run_bcftools_for_chrom(chrom: str) -> Tuple[str, str]:
+        region_file = uniq_region_files[chrom]
+        out_map = os.path.join(workdir, f"tommo.map.{chrom}.tsv")
+        # 注意：部分环境中的 `bcftools query` 不支持 --threads。
+        # 为了同时获得多线程解压能力与兼容性，这里：
+        #   threads>1 时：使用管道 `bcftools view --threads N -R ... -Ou VCF | bcftools query -f FMT`
+        #   否则：直接 `bcftools query -R ... -f FMT VCF`。
+        if isinstance(threads, int) and threads > 1:
+            fmt_q = shlex.quote(fmt)
+            cmdline = (
+                f"{shlex.quote(bcftools_path)} view --threads {threads} -R {shlex.quote(region_file)} "
+                f"-Ou {shlex.quote(tommo_vcf_path)} | "
+                f"{shlex.quote(bcftools_path)} query -f {fmt_q} > {shlex.quote(out_map)}"
+            )
+            cmd = ["bash", "-lc", cmdline]
+            ret = _run_cmd(cmd)
+        else:
+            cmd = [
+                bcftools_path, "query",
+                "-R", region_file,
+                "-f", fmt,
+                tommo_vcf_path,
+            ]
+            ret = _run_cmd(cmd, stdout_path=out_map)
+        if ret != 0:
+            raise RuntimeError(f"bcftools query 失败: 染色体 {chrom}")
+        return chrom, out_map
+
+    if max_workers is None:
+        try:
+            import multiprocessing as _mp
+            max_workers = max(1, min(4, _mp.cpu_count()))
+        except Exception:
+            max_workers = 2
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futs = [ex.submit(_run_bcftools_for_chrom, chrom) for chrom in uniq_region_files.keys()]
+        for fut in concurrent.futures.as_completed(futs):
+            chrom, out_map = fut.result()
+            mapping_files[chrom] = out_map
+            _progress(f"bcftools 完成: {chrom}")
+    _progress(f"已生成 {len(mapping_files)} 条染色体映射表")
+
+    # 诊断：若所有映射表均为空，提示可能的染色体命名不一致问题
+    empty_maps = 0
+    for _c, _path in mapping_files.items():
+        try:
+            _size = os.path.getsize(_path)
+        except OSError:
+            _size = 0
+        if _size == 0:
+            empty_maps += 1
+    if empty_maps == len(mapping_files):
+        _progress("[warn] 所有染色体映射表均为空。请检查：1) VARIANT_ID 中的染色体前缀是否与 ToMMo VCF 一致（例如 chr1 vs 1）；2) -R 区域文件是否为 1-based 两列格式；3) VCF 是否有索引 .tbi 且路径正确。")
+
+    # 5) 合并阶段：按需加载映射子集，分块写出结果
+    #    - 输出列为原表所有列 + [IN_TOMMO, TOMMO_AAF, TOMMO_FILTER]
+    #    - TOMMO_AAF 用 float，不能解析时为 NaN；IN_TOMMO 为 True/False。
+
+    # 获取原表列名（防止顺序变化）
+    with open(variant_qc_summary, 'r') as fi:
+        header_line = fi.readline().rstrip('\n')
+    base_cols = header_line.split('\t')
+    out_cols = base_cols + ["IN_TOMMO", "TOMMO_AAF", "TOMMO_FILTER"]
+
+    # 输出文件：先写表头
+    with open(output_path, 'w') as fo:
+        fo.write('\t'.join(out_cols) + '\n')
+
+    def _load_mapping_subset_for_chrom(chrom: str, needed_keys: set) -> Dict[str, Tuple[str, str]]:
+        """仅加载该染色体映射表中 *需要* 的键，返回 {VID: (FILTER, AF)}。
+        支持 ALT/AF 逗号分隔的多等位展开。
+        """
+        out: Dict[str, Tuple[str, str]] = {}
+        map_path = mapping_files.get(chrom)
+        if (map_path is None) or (not os.path.exists(map_path)):
+            return out
+        with open(map_path, 'r') as f:
+            for line in f:
+                line = line.rstrip('\n')
+                if not line:
+                    continue
+                # 兼容某些 shell 传递下，fmt 未被转义为真实制表符导致输出含字面量 "\\t" 的情况
+                if "\\t" in line and "\t" not in line:
+                    line = line.replace("\\t", "\t")
+                cols = line.split('\t')
+                # 期望：固定6列：CHROM POS REF ALT(s) FILTER AF(s)
+                if len(cols) < 6:
+                    continue
+                c, p, r, alts_s, flt, afs_s = cols[0], cols[1], cols[2], cols[3], cols[4], cols[5]
+                # ALT 与 AF 都可能是逗号分隔的多等位数组；需要一一配对
+                alts = alts_s.split(",") if alts_s != "." else []
+                afs = afs_s.split(",") if afs_s not in (".", "") else []
+                # 对齐长度：若 AF 缺失或长度与 ALT 不同，仅在可配对位置输出
+                n = min(len(alts), len(afs)) if afs else len(alts)
+                for j in range(n):
+                    a = alts[j]
+                    af = afs[j] if j < len(afs) else "."
+                    vid = f"{c}:{p}:{r}:{a}"
+                    if (not needed_keys) or (vid in needed_keys):
+                        out[vid] = (flt, af)
+        # 轻量诊断：如需要可打印命中数（仅当存在需要键时）
+        if needed_keys:
+            hit_cnt = sum(1 for k in needed_keys if k in out)
+            _progress(f"[diag] {chrom}: 映射子集载入 {len(out):,} 条，命中 {hit_cnt:,} / {len(needed_keys):,}")
+        return out
+
+    # 分块读取原表，合并并写出
+    reader2 = pd.read_csv(
+        variant_qc_summary, sep='\t', dtype="string", chunksize=chunk_size, engine='c'
+    )
+
+    processed = 0
+    for chunk in reader2:
+        processed += len(chunk)
+        # 默认值
+        chunk["IN_TOMMO"] = False
+        chunk["TOMMO_AAF"] = pd.Series([pd.NA] * len(chunk), dtype="string")
+        chunk["TOMMO_FILTER"] = pd.Series([pd.NA] * len(chunk), dtype="string")
+
+        # 解析 VARIANT_ID -> CHROM
+        sp = chunk["VARIANT_ID"].str.split(":", n=3, expand=True)
+        sp.columns = ["CHROM", "POS", "REF", "ALT"]
+        chunk["__CHROM__"] = sp["CHROM"].astype("string")
+
+        # 按染色体处理，减少一次读取的映射量
+        for chrom, idx in chunk.groupby("__CHROM__").groups.items():
+            sub = chunk.loc[idx]
+            need_keys = set(sub["VARIANT_ID"].tolist())
+            mapping = _load_mapping_subset_for_chrom(chrom, need_keys)
+            if not mapping:
+                continue
+            # 命中掩码
+            hit_mask = sub["VARIANT_ID"].isin(mapping.keys())
+            if not hit_mask.any():
+                continue
+            vids_hit = sub.loc[hit_mask, "VARIANT_ID"]
+            # 单独构造映射字典以便矢量化 map
+            to_filter = {k: v[0] for k, v in mapping.items()}
+            to_af = {k: v[1] for k, v in mapping.items()}
+
+            chunk.loc[idx[hit_mask], "IN_TOMMO"] = True
+            # TOMMO_FILTER 直接映射到字符串
+            chunk.loc[idx[hit_mask], "TOMMO_FILTER"] = vids_hit.map(to_filter).astype("string").values
+            # TOMMO_AAF 先作为字符串接收，再安全转为 float（'.' -> NaN）
+            af_str = vids_hit.map(to_af).astype("string")
+            # 将 '.' 或无法解析的转为 NaN
+            af_num = pd.to_numeric(af_str, errors='coerce')
+            chunk.loc[idx[hit_mask], "TOMMO_AAF"] = af_num.astype("Float32").astype("string")
+
+        # 移除临时列
+        chunk = chunk.drop(columns=["__CHROM__"])
+
+        # 写出（使用字符串 dtype，缺失值显示为 'nan' 以与既有代码风格一致）
+        chunk.to_csv(
+            output_path, sep='\t', header=False, index=False, mode='a', na_rep='nan'
+        )
+        _progress(f"已处理 {processed:,} 行")
+
+    # 6) 清理或保留临时目录
+    if keep_temp:
+        _progress(f"保留临时目录: {workdir}")
+    else:
+        try:
+            workdir_obj.cleanup()
+        except Exception:
+            pass
+
+    _progress(f"完成。输出: {output_path}")
+    return output_path
+
+
+
+
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_pdf import PdfPages
 from matplotlib.ticker import MaxNLocator, FuncFormatter
@@ -397,29 +440,26 @@ def plot_tommo_panel_compare_pdf(
     refline_ls = (0, (4, 2))  # dashed pattern
     refline_lw = 1.0
 
-    # 以分块方式读取，降低内存占用（仅加载必要列）
+    # 逐块累积，避免一次性占用大量内存
     needed_cols = [
         'VARIANT_ID', 'CTRL_MAF', 'CTRL_AAF', 'TOMMO_AAF', 'IN_TOMMO', 'TOMMO_FILTER'
     ]
     chunk_size = 500_000  # 可根据内存情况调整
-    chunks = []
+    dfs = []
     for chunk in pd.read_csv(variant_qc_with_tommo, sep='\t', usecols=needed_cols,
                              dtype={'VARIANT_ID': 'string',
                                     'CTRL_MAF': 'float32',
                                     'CTRL_AAF': 'float32',
                                     'TOMMO_AAF': 'float32',
-                                    'IN_TOMMO': 'object',  # 先以 object 读取，后续统一转为 boolean
+                                    'IN_TOMMO': 'object',
                                     'TOMMO_FILTER': 'string'},
-                             chunksize=chunk_size):
-        # 逐块轻量清洗，减少最终拼接的开销
-        # 将 IN_TOMMO 规范为 pandas NA/True/False 的字符串或布尔值
+                             chunksize=chunk_size, engine='c'):
         if 'IN_TOMMO' in chunk.columns:
-            # 兼容 True/False/1/0/"True"/"False"
             chunk['IN_TOMMO'] = chunk['IN_TOMMO'].map(
                 lambda x: True if x in (True, 1, '1', 'True', 'TRUE') else (False if x in (False, 0, '0', 'False', 'FALSE') else pd.NA)
             )
-        chunks.append(chunk)
-    df = pd.concat(chunks, ignore_index=True)
+        dfs.append(chunk)
+    df = pd.concat(dfs, ignore_index=True, copy=False)
 
 
     # 统一列名期望，并进行类型转换
