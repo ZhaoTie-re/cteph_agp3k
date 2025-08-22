@@ -809,3 +809,6 @@ def plot_tommo_panel_compare_pdf(
         plt.close(fig)
 
     return output_pdf
+
+
+# new function to start with the output path of run_plink2_variant_qc_with_tommo 

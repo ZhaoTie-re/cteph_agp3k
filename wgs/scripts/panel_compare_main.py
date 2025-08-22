@@ -69,8 +69,8 @@ import variant_qc_calculator
 import panel_compare_tools
 
 # 可在开发阶段强制 reload（正式环境可关闭）
-# importlib.reload(variant_qc_calculator)
-# importlib.reload(panel_compare_tools)
+importlib.reload(variant_qc_calculator)
+importlib.reload(panel_compare_tools)
 
 from variant_qc_calculator import run_plink2_variant_qc
 from panel_compare_tools import (
