@@ -6,6 +6,7 @@ import math
 import uuid
 from datetime import datetime
 from typing import Optional
+from typing import Dict
 import concurrent.futures
 import pandas as pd
 import numpy as np
@@ -811,4 +812,799 @@ def plot_tommo_panel_compare_pdf(
     return output_pdf
 
 
-# new function to start with the output path of run_plink2_variant_qc_with_tommo 
+def build_grouped_variant_tables(
+    variant_qc_with_tommo: str,
+    output_dir: Optional[str] = None,
+    chunk_size: int = 500_000,
+    robust_target: str = 'CTRL_AAF_minus_TOMMO_AAF',
+    keep_tmp: bool = False,
+) -> str:
+    """
+    函数名称：build_grouped_variant_tables
+    ====================================
+    【功能】
+    以 `run_plink2_variant_qc_with_tommo` 的输出（*.variant_qc_with_tommo.tsv）为输入，
+    按 CTRL_MAF 将变体划分为三个**主分组**（Rare/LowFreq/Common），并在每个主分组内
+    进一步细分 **3 个亚分组**：
+      a) TOMMO 中无记录（IN_TOMMO==False）
+      b) TOMMO 中有记录，但 TOMMO_FILTER != 'PASS'
+      c) TOMMO 中有记录，且 TOMMO_FILTER == 'PASS'
+
+    对每个主分组的 c 亚分组，计算每个变体的 **ROBUST_Z**，作为新列添加：
+      - 默认以差值 DIFF = CTRL_AAF - TOMMO_AAF 为目标变量；
+      - ROBUST_Z = (DIFF - median(DIFF)) / (1.4826 * MAD(DIFF))，当 MAD==0 时置为 NaN。
+
+    【实现要点】
+    - 采用**两遍扫描**与**分块**读取，避免一次性加载大表：
+      第一遍仅收集各主分组(c)的 DIFF 值，分别写入临时文件；随后计算每组的 median/MAD；
+      第二遍再分块读取并将行路由到 3×3 输出文件，同时为 (c) 组计算并写入 ROBUST_Z。
+    - 输出采用按分组拆分的 TSV.GZ 文件，并附带一个 JSON manifest，便于后续按条件过滤。
+
+    参数
+    ----
+    variant_qc_with_tommo : str
+        输入表路径（列至少包含 VARIANT_ID, CTRL_MAF, IN_TOMMO, TOMMO_FILTER, CTRL_AAF, TOMMO_AAF）。
+    output_dir : Optional[str]
+        输出目录（默认与输入同目录）。
+    chunk_size : int
+        Pandas 分块大小（默认 500k 行）。
+    robust_target : str
+        ROBUST_Z 目标度量，当前仅支持 'CTRL_AAF_minus_TOMMO_AAF'。
+    keep_tmp : bool
+        是否保留临时中间文件（调试用）。
+
+    返回
+    ----
+    str
+        生成的 manifest JSON 路径；其中包含每个输出文件的位置与行数统计、
+        以及各主分组(c)用于 ROBUST_Z 的 median/MAD。
+    """
+    import json
+    import gzip
+    import shutil
+    import numpy as np
+    import pandas as pd
+    from datetime import datetime
+
+    # ---- 路径与输出命名 ----
+    in_path = os.path.abspath(variant_qc_with_tommo)
+    # 将所有最终输出放在“当下运行文件夹”（当前工作目录）下；
+    # 仅临时文件放在带时间标签的子目录中。
+    if output_dir is None:
+        output_dir = os.getcwd()
+    os.makedirs(output_dir, exist_ok=True)
+
+    ts = datetime.now().strftime('%Y%m%d_%H%M%S')
+    workdir = os.path.join(os.getcwd(), f"tmp_group_{ts}_{uuid.uuid4().hex[:8]}")
+    os.makedirs(workdir, exist_ok=True)
+
+    # ---- 工具函数：解析/归一化列 ----
+    def _normalize_bool_series(s):
+        return s.map(lambda x: True if x in (True, 1, '1', 'True', 'TRUE')
+                     else (False if x in (False, 0, '0', 'False', 'FALSE') else pd.NA))
+
+    def _assign_main_group(ctrl_maf: pd.Series) -> pd.Series:
+        """返回主分组标签：'rare'/'lowfreq'/'common'，其它为 NaN（丢弃）。"""
+        s = pd.to_numeric(ctrl_maf, errors='coerce')
+        labels = pd.Series(pd.NA, index=s.index, dtype='object')
+        labels = labels.mask(s < 0.01, 'rare')
+        labels = labels.mask((s >= 0.01) & (s < 0.05), 'lowfreq')
+        labels = labels.mask(s >= 0.05, 'common')
+        return labels
+
+    def _assign_subgroup(in_tommo: pd.Series, tommo_filter: pd.Series) -> pd.Series:
+        tf = tommo_filter.astype(str).str.upper()
+        it = _normalize_bool_series(in_tommo)
+        sub = pd.Series(pd.NA, index=tf.index, dtype='object')
+        sub = sub.mask(it == False, 'a_not_in_tommo')
+        sub = sub.mask((it == True) & (tf != 'PASS'), 'b_in_nonpass')
+        sub = sub.mask((it == True) & (tf == 'PASS'), 'c_in_pass')
+        return sub
+
+    # ---- 需要的列 ----
+    usecols = [
+        'VARIANT_ID', 'CTRL_MAF', 'IN_TOMMO', 'TOMMO_FILTER', 'CTRL_AAF', 'TOMMO_AAF'
+    ]
+
+    # ---- 第一遍：收集各主分组(c)的 DIFF ----
+    diff_tmp_paths = {
+        'rare':   os.path.join(workdir, 'diff_rare.txt'),
+        'lowfreq':os.path.join(workdir, 'diff_lowfreq.txt'),
+        'common': os.path.join(workdir, 'diff_common.txt'),
+    }
+    # 清空文件
+    for p in diff_tmp_paths.values():
+        open(p, 'w').close()
+
+    total_rows = 0
+    for chunk in pd.read_csv(in_path, sep='\t', usecols=usecols, dtype='string', chunksize=chunk_size, engine='c'):
+        total_rows += len(chunk)
+        mg = _assign_main_group(chunk['CTRL_MAF'])
+        sg = _assign_subgroup(chunk['IN_TOMMO'], chunk['TOMMO_FILTER'])
+        # 仅 (c) 组且两列可数值化
+        mask_c = (sg == 'c_in_pass') & chunk['CTRL_AAF'].notna() & chunk['TOMMO_AAF'].notna()
+        if not mask_c.any():
+            continue
+        csub = chunk.loc[mask_c, ['CTRL_AAF', 'TOMMO_AAF']].apply(pd.to_numeric, errors='coerce')
+        csub['DIFF'] = csub['CTRL_AAF'] - csub['TOMMO_AAF']
+        # 按主分组分别写入
+        for gname in ('rare', 'lowfreq', 'common'):
+            idx = (mg[mask_c] == gname)
+            if idx.any():
+                vals = csub.loc[idx.values, 'DIFF'].dropna().tolist()
+                if vals:
+                    with open(diff_tmp_paths[gname], 'a') as f:
+                        f.write('\n'.join(f"{v:.10g}" for v in vals) + '\n')
+
+    # 计算各主分组的 median 与 MAD
+    from scipy.stats import median_abs_deviation
+    robust_stats = {}
+    for gname, path in diff_tmp_paths.items():
+        if os.path.getsize(path) == 0:
+            robust_stats[gname] = {'median': None, 'mad': None}
+            continue
+        arr = np.loadtxt(path, dtype=float, ndmin=1)
+        if arr.size == 0:
+            robust_stats[gname] = {'median': None, 'mad': None}
+            continue
+        med = float(np.median(arr))
+        mad = float(median_abs_deviation(arr, scale=1, nan_policy="omit"))
+        robust_stats[gname] = {'median': med, 'mad': mad}
+
+    # ---- 准备输出文件句柄（按 3×3 拆分） ----
+    def _outfile(main_g: str, sub_g: str) -> str:
+        return os.path.join(output_dir, f"{os.path.basename(in_path)}.{main_g}.{sub_g}.tsv.gz")
+
+    out_paths = {g: {h: _outfile(g, h) for h in ('a_not_in_tommo','b_in_nonpass','c_in_pass')} for g in ('rare','lowfreq','common')}
+    out_files = {g: {h: gzip.open(out_paths[g][h], 'wt') for h in out_paths[g]} for g in out_paths}
+
+    # 写表头（追加两列：GROUP_MAIN, GROUP_SUB；并在 (c) 组包含 DIFF 与 ROBUST_Z）
+    header_cols = ['VARIANT_ID','MAF','VMISS','CASE_AAF','CTRL_AAF','CTRL_MAF','CASE_HWE','CTRL_HWE','IN_TOMMO','TOMMO_AAF','TOMMO_FILTER','GROUP_MAIN','GROUP_SUB','DIFF','ROBUST_Z']
+    header_line = '\t'.join(header_cols) + '\n'
+    for g in out_files:
+        for h in out_files[g]:
+            out_files[g][h].write(header_line)
+
+    # ---- 第二遍：路由写出，并计算 ROBUST_Z（仅 c 组） ----
+    counts = {g: {h: 0 for h in ('a_not_in_tommo','b_in_nonpass','c_in_pass')} for g in ('rare','lowfreq','common')}
+    for chunk in pd.read_csv(in_path, sep='\t', dtype='string', chunksize=chunk_size, engine='c'):
+        # 统一列
+        for col in ['CTRL_AAF','TOMMO_AAF','CTRL_MAF']:
+            if col in chunk.columns:
+                chunk[col] = pd.to_numeric(chunk[col], errors='coerce')
+        mg = _assign_main_group(chunk['CTRL_MAF'])
+        sg = _assign_subgroup(chunk['IN_TOMMO'], chunk['TOMMO_FILTER'])
+
+        # 计算 DIFF（备用，只有 c 组才会写入数值）
+        diff = (chunk['CTRL_AAF'] - chunk['TOMMO_AAF']).astype('float64')
+
+        # 为每个 (main, sub) 选择并写出
+        for main_g in ('rare','lowfreq','common'):
+            mask_main = (mg == main_g)
+            if not mask_main.any():
+                continue
+            for sub_g in ('a_not_in_tommo','b_in_nonpass','c_in_pass'):
+                mask = mask_main & (sg == sub_g)
+                if not mask.any():
+                    continue
+                subdf = chunk.loc[mask, :].copy()
+                # 附加分组列
+                subdf['GROUP_MAIN'] = main_g
+                subdf['GROUP_SUB'] = sub_g
+                # 计算 ROBUST_Z（仅 c 组）
+                subdf['DIFF'] = pd.NA
+                subdf['ROBUST_Z'] = pd.NA
+                if sub_g == 'c_in_pass':
+                    med = robust_stats.get(main_g, {}).get('median', None)
+                    mad = robust_stats.get(main_g, {}).get('mad', None)
+                    if med is not None and mad is not None and mad != 0:
+                        subdf['DIFF'] = diff.loc[mask].values
+                        subdf['ROBUST_Z'] = ((subdf['DIFF'] - med) / (1.4826 * mad)).astype('float64')
+                    elif med is not None and (mad == 0):
+                        # MAD==0：全与中位数一致；ROBUST_Z 置为 0
+                        subdf['DIFF'] = diff.loc[mask].values
+                        subdf['ROBUST_Z'] = 0.0
+                    else:
+                        # 缺少 robust 统计，保持 NaN
+                        subdf['DIFF'] = diff.loc[mask].values
+
+                # 只保留所需列顺序并写出
+                subdf = subdf[['VARIANT_ID','MAF','VMISS','CASE_AAF','CTRL_AAF','CTRL_MAF','CASE_HWE','CTRL_HWE','IN_TOMMO','TOMMO_AAF','TOMMO_FILTER','GROUP_MAIN','GROUP_SUB','DIFF','ROBUST_Z']]
+                out = out_files[main_g][sub_g]
+                subdf.to_csv(out, sep='\t', header=False, index=False, na_rep='nan')
+                counts[main_g][sub_g] += len(subdf)
+
+    # 关闭文件
+    for g in out_files:
+        for h in out_files[g]:
+            out_files[g][h].close()
+
+    # 清理临时目录
+    if keep_tmp:
+        tmp_note = os.path.join(workdir, 'KEEP_TMP.txt')
+        with open(tmp_note, 'w') as f:
+            f.write('临时文件保留以便排错。')
+    else:
+        try:
+            shutil.rmtree(workdir)
+        except Exception:
+            pass
+
+    # 写 manifest.json，便于后续引用
+    manifest = {
+        'input': in_path,
+        'output_dir': output_dir,
+        'robust_target': robust_target,
+        'robust_stats': robust_stats,
+        'counts': counts,
+        'files': out_paths,
+    }
+    manifest_path = os.path.join(output_dir, 'manifest.json')
+    with open(manifest_path, 'w') as f:
+        json.dump(manifest, f, indent=2)
+
+    return manifest_path
+
+
+def summarize_c_in_pass_thresholds(
+    manifest_path: str,
+    output_dir: Optional[str] = None,
+    chunk_size: int = 1_000_000,
+) -> str:
+    """
+    函数名称：summarize_c_in_pass_thresholds
+    ======================================
+    【功能】
+    读取 `build_grouped_variant_tables` 生成的 manifest.json，仅针对三个主分组
+    ('rare', 'lowfreq', 'common') 的 **c_in_pass** 亚分组，基于该亚分组中的 `ROBUST_Z`
+    计算“|ROBUST_Z| 阈值”从 1 到 `max`，**步长为 0.2**（例如 t=1..3 → 阈值为 1.0, 1.2, 1.4, ..., 2.8, 3.0；
+    其中 `max=ceil(max(|ROBUST_Z|))`，若 <1 则取 1）的统计摘要：
+      - `count`：满足 |ROBUST_Z| < 阈值 的 `VARIANT_ID` 数量（同时要求 CTRL_AAF/TOMMO_AAF 可用）；
+      - `mse`：在该条件下的 MSE(CTRL_AAF vs TOMMO_AAF)。
+
+    【实现】
+    - 对每个主分组的 c_in_pass 文件，先进行**第一遍**分块扫描，获得全组的 `max_abs_robust_z`；
+    - 计算 `max_int = max(1, ceil(max_abs_robust_z))`；
+    - 再进行**第二遍**分块扫描：对 t=1..max_int，步长为 0.2，累计计数与平方误差和（SSE），最终得到 MSE=SSE/count。
+    - 将汇总结果写出为每组一个 TSV 文件，并将路径与关键统计更新写回 manifest.json。
+
+    参数
+    ----
+    manifest_path : str
+        `build_grouped_variant_tables` 输出的 manifest.json 路径。
+    output_dir : Optional[str]
+        摘要 TSV 输出目录；默认与 manifest.json 同目录。
+    chunk_size : int
+        分块大小（默认 1,000,000 行）。
+
+    返回
+    ----
+    str
+        更新后的 manifest.json 路径（与输入相同）。
+    """
+    import json
+    import os
+    import numpy as np
+    import pandas as pd
+
+    # 读取 manifest
+    manifest_path = os.path.abspath(manifest_path)
+    with open(manifest_path, 'r') as f:
+        manifest = json.load(f)
+
+    if output_dir is None:
+        output_dir = os.path.dirname(manifest_path) or os.getcwd()
+    os.makedirs(output_dir, exist_ok=True)
+
+    files_map = manifest.get('files', {})
+    if not files_map:
+        raise ValueError("manifest.json 缺少 'files' 字段，或为空。")
+
+    # 仅处理三个主分组
+    main_groups = ['rare', 'lowfreq', 'common']
+    subgroup = 'c_in_pass'
+
+    # 结果写回区域
+    out_key = 'c_in_pass_thresholds'
+    manifest[out_key] = manifest.get(out_key, {})
+
+    def _first_pass_max_abs(path: str) -> float:
+        """第一遍：扫描 ROBUST_Z 的绝对值最大值。忽略 NaN。"""
+        max_abs = 0.0
+        usecols = ['ROBUST_Z']
+        for chunk in pd.read_csv(path, sep='\t', usecols=usecols, dtype='float64',
+                                 chunksize=chunk_size, engine='c', na_values=['nan', 'NaN', 'NA', '.']):
+            if 'ROBUST_Z' not in chunk:
+                continue
+            z = chunk['ROBUST_Z'].to_numpy(dtype='float64', copy=False)
+            if z.size == 0:
+                continue
+            z = z[~np.isnan(z)]
+            if z.size == 0:
+                continue
+            m = float(np.max(np.abs(z)))
+            if m > max_abs:
+                max_abs = m
+        return max_abs
+
+    def _second_pass_summary(path: str, max_int: int) -> pd.DataFrame:
+        """第二遍：对 t=1..max_int（步长0.2）统计 count 与 MSE（仅使用 CTRL_AAF/TOMMO_AAF 均可用的行）。"""
+        thresholds = np.arange(1.0, max_int + 0.2, 0.2, dtype='float64')  # 1.0, 1.2, 1.4, ..., max_int
+        sse = np.zeros(thresholds.shape, dtype='float64')
+        cnt = np.zeros(thresholds.shape, dtype='int64')
+        usecols = ['VARIANT_ID', 'CTRL_AAF', 'TOMMO_AAF', 'ROBUST_Z']
+        for chunk in pd.read_csv(path, sep='\t', usecols=usecols, dtype='string',
+                                 chunksize=chunk_size, engine='c', na_values=['nan', 'NaN', 'NA', '.']):
+            # 转换类型并构建掩码
+            z = pd.to_numeric(chunk['ROBUST_Z'], errors='coerce').to_numpy(dtype='float64')
+            ca = pd.to_numeric(chunk['CTRL_AAF'], errors='coerce').to_numpy(dtype='float64')
+            ta = pd.to_numeric(chunk['TOMMO_AAF'], errors='coerce').to_numpy(dtype='float64')
+            valid = (~np.isnan(z)) & (~np.isnan(ca)) & (~np.isnan(ta))
+            if not np.any(valid):
+                continue
+            z_abs = np.abs(z[valid])
+            err2 = (ca[valid] - ta[valid]) ** 2
+            # 对每个阈值做累计（阈值个数通常不大，直接循环更直观）
+            for i, t in enumerate(thresholds):
+                mask = z_abs < t
+                if np.any(mask):
+                    cnt[i] += int(mask.sum())
+                    sse[i] += float(err2[mask].sum())
+        # 输出 DataFrame
+        mse = np.full_like(sse, fill_value=np.nan, dtype='float64')
+        nz = cnt > 0
+        mse[nz] = sse[nz] / cnt[nz]
+        out = pd.DataFrame({
+            'threshold_abs_robust_z': thresholds,
+            'count_variants': cnt,
+            'mse_ctrl_vs_tommo': mse,
+        })
+        return out
+
+    for main in main_groups:
+        path = files_map.get(main, {}).get(subgroup)
+        if not path:
+            continue
+        if not os.path.exists(path):
+            # 若路径为相对路径，尝试相对 manifest 的目录
+            cand = os.path.join(os.path.dirname(manifest_path), os.path.basename(path))
+            if os.path.exists(cand):
+                path = cand
+            else:
+                # 记录缺失
+                manifest[out_key][main] = {
+                    'summary_tsv': None,
+                    'max_abs_robust_z': None,
+                    'max_int': None,
+                    'note': f"missing file: {path}"
+                }
+                continue
+
+        # 第一遍：找最大绝对值
+        max_abs = _first_pass_max_abs(path)
+        max_int = int(np.ceil(max_abs))
+        if max_int < 1:
+            max_int = 1
+
+        # 第二遍：统计 1..max_int 的 count 与 MSE
+        df_sum = _second_pass_summary(path, max_int)
+
+        # 写出该主分组的摘要 TSV
+        base = os.path.basename(path)
+        out_tsv = os.path.join(
+            output_dir,
+            f"{base}.c_in_pass.robustz_threshold_summary.tsv"
+        )
+        df_sum.to_csv(out_tsv, sep='\t', index=False)
+
+        # 回写 manifest
+        manifest[out_key][main] = {
+            'summary_tsv': out_tsv,
+            'max_abs_robust_z': float(max_abs) if np.isfinite(max_abs) else None,
+            'max_int': int(max_int),
+            'note': 'thresholds are 1..max_int with 0.2 step; count excludes rows without CTRL_AAF/TOMMO_AAF/ROBUST_Z.'
+        }
+
+    # 保存更新后的 manifest
+    with open(manifest_path, 'w') as f:
+        json.dump(manifest, f, indent=2)
+
+    return manifest_path
+
+
+
+# new function based the updated manifest_path structure for plotting
+def plot_c_in_pass_threshold_tradeoff(
+    manifest_path: str,
+    output_pdf: Optional[str] = None,
+    figsize: tuple = (14, 5),
+    marker_size: int = 18,
+    line_width: float = 1.5,
+    y_min_zero: bool = True,
+    use_log_y: bool = False,
+    png_dpi: int = 600,
+    # KneeLocator 可调参数（默认按你的要求）
+    knee_curve: str = 'concave',
+    knee_direction: str = 'increasing',
+    knee_S: float = 1.0,
+    knee_weight_x: float = 1.0,
+    knee_weight_y: float = 1.0,
+    knee_weight_y_map: Optional[Dict[str, float]] = None,
+) -> str:
+    """
+    函数名称：plot_c_in_pass_threshold_tradeoff
+    =========================================
+    【功能】
+    读取 `summarize_c_in_pass_thresholds` 更新后的 manifest.json，仅针对 `c_in_pass_thresholds`
+    的 3 个主分组（rare/lowfreq/common），分别加载其 `summary_tsv`，
+    在一页 PDF 中绘制 3 个子图：
+      - X 轴：`mse_ctrl_vs_tommo`
+      - Y 轴：`count_variants`
+      - 点按 `threshold_abs_robust_z` 升序连接（scatter+line）
+    输出 PDF 文件路径。
+    并将每个子图标注（阈值/计数与比例/MSE）写回 manifest.json 的 `c_in_pass_knee` 字段。
+
+    现在支持为不同主分组（rare, lowfreq, common）分别指定 knee_weight_y，覆盖全局默认值。
+
+    另新增一页：针对每个主分组，在 `|ROBUST_Z| < knee_threshold` 条件下，
+    绘制这些**被计入 count 的变体**的散点图（X=TOMMO_AAF, Y=CTRL_AAF），
+    采用 PNG (dpi=600) 先渲染后插入 PDF，提高性能。
+
+    参数
+    ----
+    manifest_path : str
+        `build_grouped_variant_tables` → `summarize_c_in_pass_thresholds` 后的 manifest.json 路径。
+    output_pdf : Optional[str]
+        输出 PDF 路径；默认与 manifest 同目录，文件名为 `c_in_pass_threshold_tradeoff.pdf`。
+    figsize : tuple
+        单页画布尺寸（英寸）。
+    marker_size : int
+        散点大小。
+    line_width : float
+        折线宽度。
+    y_min_zero : bool
+        若为 True，则 y 轴下界以 0 起（当数据允许）。
+    use_log_y : bool
+        若为 True，则使用对数 y 轴（适合跨度很大时）。
+    png_dpi : int
+        新增散点页的位图渲染分辨率（DPI），默认 600。
+    knee_curve, knee_direction, knee_S :
+        传给 KneeLocator 的 `curve`, `direction`, `S`，默认分别为 `'concave'`, `'increasing'`, `1.0`。
+    knee_weight_x, knee_weight_y :
+        KneeLocator 的权重（若安装的 `kneed` 版本不支持，将自动回退为不带权重调用）。默认 `1.0` 与 `2.3`。
+    knee_weight_y_map : dict, optional
+        针对不同主分组设置的 weight_y，例如 {'rare':2.0,'lowfreq':2.3,'common':1.5}。
+        若未提供，则使用全局 knee_weight_y。
+
+    返回
+    ----
+    str
+        输出 PDF 文件路径。
+    """
+    import os
+    import json
+    import numpy as np
+    import pandas as pd
+    import matplotlib.pyplot as plt
+    from matplotlib.backends.backend_pdf import PdfPages
+    from matplotlib.ticker import MaxNLocator, FuncFormatter
+    from kneed import KneeLocator
+
+    manifest_path = os.path.abspath(manifest_path)
+    with open(manifest_path, 'r') as f:
+        manifest = json.load(f)
+
+    ckey = 'c_in_pass_thresholds'
+    if ckey not in manifest or not manifest[ckey]:
+        raise ValueError("manifest.json 中未找到 'c_in_pass_thresholds' 字段或其为空。请先运行 summarize_c_in_pass_thresholds().")
+
+    # 3 个主分组
+    order = [('Rare Variant', 'rare'), ('Low Frequency Variant', 'lowfreq'), ('Common Variant', 'common')]
+    key_map = { 'Rare Variant': 'rare', 'Low Frequency Variant': 'lowfreq', 'Common Variant': 'common' }
+
+    # 保存拐点注释，稍后写回 manifest
+    knee_notes = {}
+
+    # 读取各组 TSV
+    plots = []
+    for title, key in order:
+        info = manifest[ckey].get(key, {})
+        tsv = info.get('summary_tsv')
+        if not tsv or not os.path.exists(tsv):
+            plots.append((title, None))
+            continue
+        df = pd.read_csv(tsv, sep='\t')
+        # 期望列
+        need = ['threshold_abs_robust_z', 'count_variants', 'mse_ctrl_vs_tommo']
+        if not all(c in df.columns for c in need):
+            plots.append((title, None))
+            continue
+        # 清理 & 排序
+        df = df[need].dropna()
+        df = df.sort_values('threshold_abs_robust_z', kind='mergesort').reset_index(drop=True)
+        # 确保类型
+        df['count_variants'] = pd.to_numeric(df['count_variants'], errors='coerce')
+        df['mse_ctrl_vs_tommo'] = pd.to_numeric(df['mse_ctrl_vs_tommo'], errors='coerce')
+        df = df.dropna()
+        plots.append((title, df))
+
+    # 确定输出路径
+    if output_pdf is None:
+        out_dir = os.path.dirname(manifest_path) or os.getcwd()
+        output_pdf = os.path.join(out_dir, 'c_in_pass_threshold_tradeoff.pdf')
+
+    import tempfile
+    with PdfPages(output_pdf) as pdf:
+        fig, axes = plt.subplots(1, 3, figsize=figsize, gridspec_kw={'wspace': 0.20})
+        # 统一样式
+        plt.rcParams.update({
+            'font.sans-serif': ['Arial', 'DejaVu Sans', 'Liberation Sans'],
+            'font.size': 10,
+            'axes.titlesize': 11,
+            'axes.labelsize': 10,
+            'xtick.labelsize': 9,
+            'ytick.labelsize': 9,
+            'axes.linewidth': 0.8,
+        })
+
+        title_map = {
+            'Rare Variant': 'Rare Variant (<0.01) (PASS ToMMo)',
+            'Low Frequency Variant': 'Low Frequency Variant (0.01~0.05) (PASS ToMMo)',
+            'Common Variant': 'Common Variant (>0.05) (PASS ToMMo)'
+        }
+
+        for ax, (title, df) in zip(axes, plots):
+            ax.set_title(title_map.get(title, title))
+            if df is None or df.empty:
+                ax.text(0.5, 0.5, 'No Data', ha='center', va='center')
+                ax.set_xlabel('mse_ctrl_vs_tommo')
+                ax.set_ylabel('count_variants')
+                ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
+                continue
+
+            # 从 manifest 里取该主分组 c_in_pass 的总数，用于显示比例
+            mg_key = key_map.get(title, None)
+            total_c_in_pass = None
+            if mg_key is not None:
+                total_c_in_pass = manifest.get('counts', {}).get(mg_key, {}).get('c_in_pass', None)
+
+            x = df['mse_ctrl_vs_tommo'].to_numpy(dtype='float64')
+            y = df['count_variants'].to_numpy(dtype='float64')
+
+            # 按阈值顺序连接（df 已按 threshold_abs_robust_z 升序）
+            ax.plot(x, y, linewidth=line_width, alpha=0.9, zorder=2)
+            ax.scatter(x, y, s=marker_size, alpha=0.8, zorder=3)
+
+            # === 使用 KneeLocator 寻找拐点 ===
+            # 允许为不同主分组指定 weight_y
+            wy = knee_weight_y_map.get(mg_key, knee_weight_y) if knee_weight_y_map else knee_weight_y
+            knee_idx = None
+            knee_x = knee_y = None
+            knee_thr = None
+            try:
+                if len(x) >= 3:
+                    order_x = np.argsort(x)
+                    x_sorted = x[order_x]
+                    y_sorted = y[order_x]
+                    try:
+                        kl = KneeLocator(
+                            x_sorted, y_sorted,
+                            curve=knee_curve, direction=knee_direction, S=knee_S,
+                            weight_x=knee_weight_x, weight_y=wy,
+                        )
+                    except TypeError:
+                        kl = KneeLocator(
+                            x_sorted, y_sorted,
+                            curve=knee_curve, direction=knee_direction, S=knee_S,
+                        )
+                    knee_x = kl.knee
+                    if knee_x is None:
+                        knee_x = kl.elbow
+                    if knee_x is not None:
+                        orig_idx = int(np.nanargmin(np.abs(x - knee_x)))
+                        knee_idx = orig_idx
+                        knee_y = float(y[knee_idx])
+                        knee_thr = float(df.loc[df.index[knee_idx], 'threshold_abs_robust_z'])
+                        # 标记拐点：红色星星
+                        ax.scatter([knee_x], [knee_y], marker='*', s=220, color='red', zorder=10)
+                        # 注释文本：threshold / count / mse
+                        if isinstance(total_c_in_pass, (int, float)) and total_c_in_pass and total_c_in_pass > 0:
+                            pct = 100.0 * (knee_y / float(total_c_in_pass))
+                            count_str = f"{int(knee_y):,}/{int(total_c_in_pass):,} ({pct:.1f}%)"
+                        else:
+                            count_str = f"{int(knee_y):,}"
+                        ann = (
+                            f"thr={knee_thr:.2f}\n"
+                            f"count={count_str}\n"
+                            f"mse={knee_x:.6g}"
+                        )
+                        # 自适应注释偏移，尽量避开边缘与曲线
+                        xlim = ax.get_xlim(); ylim = ax.get_ylim()
+                        xn = 0.0 if xlim[1] == xlim[0] else (knee_x - xlim[0]) / (xlim[1] - xlim[0])
+                        yn = 0.0 if ylim[1] == ylim[0] else (knee_y - ylim[0]) / (ylim[1] - ylim[0])
+                        if xn >= 0.5 and yn >= 0.5:
+                            offset = (-12, -12); ha, va = 'right', 'top'
+                        elif xn < 0.5 and yn >= 0.5:
+                            offset = (12, -12); ha, va = 'left', 'top'
+                        elif xn >= 0.5 and yn < 0.5:
+                            offset = (-12, 12); ha, va = 'right', 'bottom'
+                        else:
+                            offset = (12, 12); ha, va = 'left', 'bottom'
+                        ax.annotate(
+                            ann,
+                            xy=(knee_x, knee_y),
+                            xytext=offset, textcoords='offset points',
+                            fontsize=9, color='red', ha=ha, va=va,
+                            bbox=dict(boxstyle='round,pad=0.25', fc='white', ec='red', lw=0.8, alpha=0.95),
+                            arrowprops=dict(arrowstyle='->', lw=0.8, color='red')
+                        )
+                        # 记录注释内容以写回 manifest
+                        knee_notes[mg_key] = {
+                            'threshold_abs_robust_z': float(knee_thr),
+                            'count_variants_at_knee': int(knee_y),
+                            'total_c_in_pass': int(total_c_in_pass) if isinstance(total_c_in_pass, (int, float)) and total_c_in_pass is not None else None,
+                            'percent_of_c_in_pass': (float(knee_y) / float(total_c_in_pass) * 100.0) if isinstance(total_c_in_pass, (int, float)) and total_c_in_pass and total_c_in_pass > 0 else None,
+                            'mse_ctrl_vs_tommo_at_knee': float(knee_x),
+                            'annotation_text': ann,
+                            'knee_params': {
+                                'curve': knee_curve,
+                                'direction': knee_direction,
+                                'S': float(knee_S),
+                                'weight_x': float(knee_weight_x),
+                                'weight_y': float(wy),
+                            }
+                        }
+            except Exception:
+                # 避免因个别数据异常导致绘图失败；静默跳过拐点标注
+                pass
+
+            ax.set_xlabel('mse_ctrl_vs_tommo')
+            ax.set_ylabel('count_variants')
+            if y_min_zero:
+                try:
+                    xmin = min(0.0, float(np.nanmin(x)))
+                except ValueError:
+                    xmin = 0.0
+                ax.set_xlim(left=xmin)
+            if use_log_y:
+                ax.set_xscale('log')
+
+            # 让坐标轴整数刻度更友好
+            ax.xaxis.set_major_locator(MaxNLocator(nbins=6, integer=False))
+            ax.yaxis.set_major_locator(MaxNLocator(nbins=6, integer=False))
+            ax.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
+
+        fig.subplots_adjust(left=0.05, right=0.98, bottom=0.10, top=0.90)
+        pdf.savefig(fig, bbox_inches='tight')
+        plt.close(fig)
+
+        # ===== 新增页面：按 knee 阈值选中的变体散点（X=TOMMO_AAF, Y=CTRL_AAF），每个分组一张PNG再合成一页 =====
+        # 需要：各分组的 c_in_pass 路径 + knee 阈值
+        files_map = manifest.get('files', {})
+        title_map2 = {
+            'rare': 'Rare Variant (<0.01) (PASS ToMMo)',
+            'lowfreq': 'Low Frequency Variant (0.01~0.05) (PASS ToMMo)',
+            'common': 'Common Variant (>0.05) (PASS ToMMo)'
+        }
+
+        # 小工具：组合三张 PNG 到单页
+        def _compose_three_pngs_to_pdf_page(png_paths, titles, subtitle_suffixes=None):
+            fig2, axes2 = plt.subplots(1, 3, figsize=figsize, gridspec_kw={'wspace': 0.0})
+            for ax2, path2, t2, sub2 in zip(axes2, png_paths, titles, subtitle_suffixes or ['']*3):
+                full_t = t2 + ('' if not sub2 else f"\n{sub2}")
+                if path2 is None:
+                    ax2.text(0.5, 0.5, 'No Data', ha='center', va='center')
+                else:
+                    img2 = plt.imread(path2)
+                    ax2.imshow(img2, interpolation='none', aspect='auto')
+                # 使用轴自身标题，避免 fig.text 布局偏移导致错位
+                ax2.set_title(full_t, fontsize=12, pad=6)
+                ax2.title.set_x(0.57)
+                ax2.set_xticks([])
+                ax2.set_yticks([])
+                for spine in ax2.spines.values():
+                    spine.set_visible(False)
+            fig2.subplots_adjust(left=0.01, right=0.99, bottom=0.06, top=0.94)
+            pdf.savefig(fig2, bbox_inches='tight')
+            plt.close(fig2)
+
+        png_paths = []
+        titles2 = []
+        subtitles = []
+
+        for disp_title, mg_key in [('Rare Variant', 'rare'), ('Low Frequency Variant', 'lowfreq'), ('Common Variant', 'common')]:
+            # 需要该组的 knee 阈值与 c_in_pass 文件
+            kn = knee_notes.get(mg_key)
+            c_path = files_map.get(mg_key, {}).get('c_in_pass')
+            disp = title_map2.get(mg_key, disp_title)
+            if not kn or not c_path or not os.path.exists(c_path):
+                png_paths.append(None)
+                titles2.append(disp)
+                subtitles.append('')
+                continue
+            thr = float(kn.get('threshold_abs_robust_z')) if kn.get('threshold_abs_robust_z') is not None else None
+            if thr is None or not np.isfinite(thr):
+                png_paths.append(None)
+                titles2.append(disp)
+                subtitles.append('')
+                continue
+
+            # 读取该分组文件，筛选 |ROBUST_Z| < thr，且两侧频率可用
+            cols_need = ['VARIANT_ID','CTRL_AAF','TOMMO_AAF','ROBUST_Z']
+            pts = []  # (TOMMO_AAF, CTRL_AAF, TYPE)
+            atcg = {"A","T","C","G"}
+            for chunk in pd.read_csv(c_path, sep='\t', usecols=cols_need, dtype='string',
+                                     chunksize=500_000, engine='c', na_values=['nan','NaN','NA','.']):
+                z = pd.to_numeric(chunk['ROBUST_Z'], errors='coerce')
+                ca = pd.to_numeric(chunk['CTRL_AAF'], errors='coerce')
+                ta = pd.to_numeric(chunk['TOMMO_AAF'], errors='coerce')
+                mask = z.notna() & ca.notna() & ta.notna() & (z.abs() < thr)
+                if not mask.any():
+                    continue
+                sub = chunk.loc[mask, ['VARIANT_ID']].copy()
+                sub['CTRL_AAF'] = ca[mask].to_numpy()
+                sub['TOMMO_AAF'] = ta[mask].to_numpy()
+                # 判定 SNP / InDel（严格单碱基）
+                def _typ(vid):
+                    if not isinstance(vid, str):
+                        return 'InDel'
+                    parts = vid.split(':', 3)
+                    if len(parts) != 4:
+                        return 'InDel'
+                    ref, alt = parts[2], parts[3]
+                    if ref in atcg and alt in atcg and len(ref)==1 and len(alt)==1:
+                        return 'SNP'
+                    return 'InDel'
+                sub['TYPE'] = sub['VARIANT_ID'].apply(_typ)
+                pts.append(sub[['TOMMO_AAF','CTRL_AAF','TYPE']])
+            if pts:
+                df_pts = pd.concat(pts, ignore_index=True)
+            else:
+                df_pts = pd.DataFrame(columns=['TOMMO_AAF','CTRL_AAF','TYPE'])
+
+            # 绘制到单独 PNG
+            fpng, axpng = plt.subplots(figsize=(6,6))
+            if not df_pts.empty:
+                is_snp = df_pts['TYPE'].eq('SNP')
+                is_indel = df_pts['TYPE'].eq('InDel')
+                if is_snp.any():
+                    axpng.scatter(df_pts.loc[is_snp,'TOMMO_AAF'], df_pts.loc[is_snp,'CTRL_AAF'], s=16, alpha=0.7, linewidths=0, label='SNP', color='#000000', zorder=3)
+                if is_indel.any():
+                    axpng.scatter(df_pts.loc[is_indel,'TOMMO_AAF'], df_pts.loc[is_indel,'CTRL_AAF'], s=18, alpha=0.8, linewidths=0, label='InDel', color='#CC79A7', zorder=4)
+            else:
+                axpng.text(0.5, 0.5, 'No Data', ha='center', va='center')
+            axpng.plot([0,1],[0,1], linestyle=(0,(4,2)), linewidth=1.0, color='#CC0000', zorder=10)
+            axpng.minorticks_on()
+            axpng.legend(frameon=False, fontsize=9)
+            axpng.set_xlabel('TOMMO_AAF')
+            axpng.set_ylabel('CTRL_AAF')
+            axpng.set_xlim(0,1)
+            axpng.set_ylim(0,1)
+            axpng.set_box_aspect(1)
+            axpng.xaxis.set_major_locator(MaxNLocator(nbins=5))
+            axpng.yaxis.set_major_locator(MaxNLocator(nbins=5))
+            axpng.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
+            fpng.subplots_adjust(left=0.18, right=0.98, bottom=0.18, top=0.94)
+            out_png2 = os.path.join(os.path.dirname(output_pdf), f"knee_scatter_{mg_key}.png")
+            fpng.savefig(out_png2, dpi=png_dpi)
+            plt.close(fpng)
+            png_paths.append(out_png2)
+            titles2.append(disp)
+            subtitles.append(f"|ROBUST_Z| < {thr:.2f}")
+
+        _compose_three_pngs_to_pdf_page(png_paths, titles2, subtitles)
+
+    # 将拐点注释写回 manifest.json
+    try:
+        if knee_notes:
+            manifest.setdefault('c_in_pass_knee', {})
+            # 更新而不是覆盖其它组的数据
+            for k, v in knee_notes.items():
+                manifest['c_in_pass_knee'][k] = v
+            with open(manifest_path, 'w') as f:
+                json.dump(manifest, f, indent=2)
+    except Exception:
+        # 写回失败不影响绘图输出
+        pass
+
+    return output_pdf
