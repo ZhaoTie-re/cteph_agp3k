@@ -1791,3 +1791,548 @@ def plot_c_in_pass_threshold_tradeoff(
         pass
 
     return output_pdf
+
+
+def summarize_variants_filter_from_manifest(
+    manifest_path: str,
+    output_dir: Optional[str] = None,
+    chunk_size: int = 500_000,
+    max_workers: Optional[int] = None,
+    keep_tmp: bool = False,
+) -> dict:
+    """
+    函数名称：summarize_variants_filter_from_manifest
+    ==============================================
+    【功能】
+    读取 `manifest.json`（由 build_grouped_variant_tables/summarize_c_in_pass_thresholds/plot_c_in_pass_threshold_tradeoff 产生）
+    中的 `input` 表路径，按用户指定逻辑生成一个 **summary 表**：
+      - 列：VARIANT_ID, GROUP, IN_TOMMO, PASS_TOMMO, PASS_GROUP_ROBUST_Z_FILTER, FILTER_STAT
+      - GROUP：基于 CTRL_MAF 分组：rare(<0.01)、lowfreq(0.01~0.05)、common(>=0.05)
+      - IN_TOMMO：来自 input 的 IN_TOMMO
+      - PASS_TOMMO：来自 input 的 TOMMO_FILTER（NaN 保持 NaN；'PASS'→True；其它→False）
+      - PASS_GROUP_ROBUST_Z_FILTER：仅当 IN_TOMMO 和 PASS_TOMMO 同时为 True 时才评估；
+        根据该行 GROUP 选择 manifest['c_in_pass_knee'][GROUP]['selected_variants_tsv']，若 VARIANT_ID 出现在该 TSV 中 → True；
+        若不在 → False；否则（前置条件不满足）填 NaN。
+      - FILTER_STAT：基于三步判定生成的最终状态标签（便于后续一键过滤）：
+        * Stat_1：IN_TOMMO==True 且 PASS_TOMMO==True 且 PASS_GROUP_ROBUST_Z_FILTER==True
+        * Stat_2：IN_TOMMO==True 且 PASS_TOMMO==True 且 PASS_GROUP_ROBUST_Z_FILTER==False
+        * Stat_3：IN_TOMMO==True 且 PASS_TOMMO==False（此时 PASS_GROUP_ROBUST_Z_FILTER 为 NaN）
+        * Stat_4：IN_TOMMO==False（此时 PASS_TOMMO 与 PASS_GROUP_ROBUST_Z_FILTER 分别为 NaN）
+
+    【实现】
+    - 使用 pandas 分块读取大表（chunk_size 可配），并**并行**处理每个分块（ThreadPoolExecutor）。
+    - 结果以流式追加写出，避免占用大量内存。
+    - 最终额外输出一个 2 维统计：按 (GROUP, FILTER_STAT) 计数，并在统计表中新增两列：
+      `GROUP_TOTAL`（该 GROUP 的总数）与 `PERCENT`（COUNT/该 GROUP 总数，百分比，保留 4 位小数）。
+
+    Stat_1~Stat_4 说明：
+      - FILTER_STAT：基于三步判定生成的最终状态标签（便于后续一键过滤）：
+        * Stat_1：IN_TOMMO==True 且 PASS_TOMMO==True 且 PASS_GROUP_ROBUST_Z_FILTER==True
+        * Stat_2：IN_TOMMO==True 且 PASS_TOMMO==True 且 PASS_GROUP_ROBUST_Z_FILTER==False
+        * Stat_3：IN_TOMMO==True 且 PASS_TOMMO==False（此时 PASS_GROUP_ROBUST_Z_FILTER 为 NaN）
+        * Stat_4：IN_TOMMO==False（此时 PASS_TOMMO 与 PASS_GROUP_ROBUST_Z_FILTER 分别为 NaN）
+
+    参数
+    ----
+    manifest_path : str
+        manifest.json 路径。
+    output_dir : Optional[str]
+        输出目录；默认与 manifest 同目录。
+    chunk_size : int
+        pandas 分块大小（默认 1,000,000 行）。
+    max_workers : Optional[int]
+        并行工作线程数；默认 min(8, CPU)。
+    keep_tmp : bool
+        是否保留可能的临时文件（当前函数仅打印日志，不创建大临时文件）。
+
+    返回
+    ----
+    dict
+        包含输出路径与计数字典的简要信息。
+    """
+    import os
+    import json
+    import math
+    import time
+    import threading
+    import concurrent.futures
+    from collections import defaultdict
+
+    import pandas as pd
+    import numpy as np
+
+    t0 = time.time()
+    manifest_path = os.path.abspath(manifest_path)
+    with open(manifest_path, 'r') as f:
+        manifest = json.load(f)
+
+    # —— 路径解析 ——
+    in_path = manifest.get('input')
+    if not in_path:
+        raise ValueError("manifest.json 缺少 'input' 字段")
+    if output_dir is None:
+        output_dir = os.path.dirname(manifest_path) or os.getcwd()
+    os.makedirs(output_dir, exist_ok=True)
+
+    # —— 读取每组 selected_variants_tsv → set ——
+    knee = manifest.get('c_in_pass_knee', {}) or {}
+    sel_sets = {}
+    for gkey in ('rare', 'lowfreq', 'common'):
+        path = (knee.get(gkey) or {}).get('selected_variants_tsv')
+        s = set()
+        if path and os.path.exists(path):
+            try:
+                for chunk in pd.read_csv(path, sep='\t', usecols=['VARIANT_ID'], dtype='string', chunksize=500_000):
+                    s.update(v for v in chunk['VARIANT_ID'].dropna().tolist())
+            except Exception:
+                # 尝试无表头读取
+                for chunk in pd.read_csv(path, sep='\t', header=0, names=['VARIANT_ID'], dtype='string', chunksize=500_000):
+                    s.update(v for v in chunk['VARIANT_ID'].dropna().tolist())
+        sel_sets[gkey] = s
+
+    # —— 输出文件 ——
+    base_name = os.path.basename(in_path)
+    out_summary = os.path.join(output_dir, f"{base_name}.summary_filter.tsv")
+    out_stats = os.path.join(output_dir, f"{base_name}.summary_filter.counts.tsv")
+
+    # 写表头
+    with open(out_summary, 'w') as fo:
+        fo.write('\t'.join(['VARIANT_ID', 'GROUP', 'IN_TOMMO', 'PASS_TOMMO', 'PASS_GROUP_ROBUST_Z_FILTER', 'FILTER_STAT']) + '\n')
+
+    # 统计计数（分块累积）
+    counts = defaultdict(int)  # key: (GROUP, FILTER_STAT)
+    counts_lock = threading.Lock()
+
+    # GROUP 由 CTRL_MAF 决定
+    def _assign_group_from_ctrl_maf(arr: pd.Series) -> pd.Series:
+        x = pd.to_numeric(arr, errors='coerce')
+        out = pd.Series(pd.NA, index=x.index, dtype='object')
+        out = out.mask(x < 0.01, 'rare')
+        out = out.mask((x >= 0.01) & (x < 0.05), 'lowfreq')
+        out = out.mask(x >= 0.05, 'common')
+        return out
+
+    def _pass_tommo_from_filter(s: pd.Series) -> pd.Series:
+        # NaN 保持 NaN；PASS→True；其它→False
+        tf = s.astype('string')
+        is_na = tf.isna() | tf.str.lower().isin(['nan', 'na', '.'])
+        out = pd.Series(pd.NA, index=tf.index, dtype='object')
+        out.loc[~is_na & (tf.str.upper() == 'PASS')] = True
+        out.loc[~is_na & (tf.str.upper() != 'PASS')] = False
+        return out
+
+    # 单块处理函数（返回处理后的 DataFrame 以及局部计数）
+    def _process_chunk(chunk: pd.DataFrame):
+        sub = pd.DataFrame(index=chunk.index)
+        sub['VARIANT_ID'] = chunk['VARIANT_ID'].astype('string')
+        sub['GROUP'] = _assign_group_from_ctrl_maf(chunk['CTRL_MAF'])
+        # IN_TOMMO → 归一化为布尔/NA
+        s_in = chunk['IN_TOMMO']
+        sub['IN_TOMMO'] = s_in.map(lambda x: True if x in (True, 1, '1', 'True', 'TRUE') else (False if x in (False, 0, '0', 'False', 'FALSE') else pd.NA))
+        # PASS_TOMMO
+        sub['PASS_TOMMO'] = _pass_tommo_from_filter(chunk['TOMMO_FILTER'])
+        # 先置 NaN
+        sub['PASS_GROUP_ROBUST_Z_FILTER'] = pd.Series([pd.NA]*len(sub), index=sub.index, dtype='object')
+
+        # 仅对 (IN_TOMMO==True & PASS_TOMMO==True) 的行进行 membership 检查
+        mask_eval = (sub['IN_TOMMO'] == True) & (sub['PASS_TOMMO'] == True) & sub['GROUP'].notna()
+        if mask_eval.any():
+            for gkey in ('rare', 'lowfreq', 'common'):
+                idx = mask_eval & (sub['GROUP'] == gkey)
+                if idx.any():
+                    vids = sub.loc[idx, 'VARIANT_ID']
+                    hit = vids.isin(sel_sets.get(gkey, set()))
+                    sub.loc[idx, 'PASS_GROUP_ROBUST_Z_FILTER'] = hit.astype('bool').astype('object')
+
+        # 生成 FILTER_STAT（Stat_1~4）
+        stat = pd.Series(pd.NA, index=sub.index, dtype='string')
+        it = sub['IN_TOMMO']
+        pt = sub['PASS_TOMMO']
+        pr = sub['PASS_GROUP_ROBUST_Z_FILTER']
+        # Stat_1: in_tommo & pass_tommo & pass_robust
+        m1 = (it == True) & (pt == True) & (pr == True)
+        # Stat_2: in_tommo & pass_tommo & fail_robust
+        m2 = (it == True) & (pt == True) & (pr == False)
+        # Stat_3: in_tommo & nonpass_tommo
+        m3 = (it == True) & (pt == False)
+        # Stat_4: not in tommo
+        m4 = (it == False)
+        stat.loc[m1] = 'Stat_1'
+        stat.loc[m2] = 'Stat_2'
+        stat.loc[m3] = 'Stat_3'
+        stat.loc[m4] = 'Stat_4'
+        sub['FILTER_STAT'] = stat
+
+        # 统计：仅按 (GROUP, FILTER_STAT) 计数
+        local_counts = defaultdict(int)
+        g_vals = sub['GROUP'].astype('string').where(sub['GROUP'].notna(), other='NA')
+        fs_vals = sub['FILTER_STAT'].astype('string').where(sub['FILTER_STAT'].notna(), other='NA')
+        for g, fs in zip(g_vals.tolist(), fs_vals.tolist()):
+            local_counts[(g, fs)] += 1
+
+        return sub[['VARIANT_ID','GROUP','IN_TOMMO','PASS_TOMMO','PASS_GROUP_ROBUST_Z_FILTER','FILTER_STAT']], local_counts
+
+    # 并行设置
+    if max_workers is None:
+        try:
+            import multiprocessing as _mp
+            max_workers = max(1, min(8, _mp.cpu_count()))
+        except Exception:
+            max_workers = 4
+
+    total_rows = 0
+    total_chunks = 0
+
+    # 写入锁，保证多线程安全地追加到同一文件
+    write_lock = threading.Lock()
+
+    print(f"[summary] 读取: {in_path}")
+    print(f"[summary] 输出: {out_summary}")
+    print(f"[summary] 统计输出: {out_stats}")
+
+    usecols = ['VARIANT_ID','CTRL_MAF','IN_TOMMO','TOMMO_FILTER']
+    print(f"[summary] 并行 worker 数: {max_workers}")
+
+    # --- 新并行流水线：producer (reader) -> N workers (process & write part files) -> merge ---
+    import queue
+    import uuid
+    try:
+        import shutil
+    except ImportError:
+        shutil = None
+
+    q: "queue.Queue[pd.DataFrame]" = queue.Queue(maxsize=max(2, max_workers * 3))
+    worker_counts: dict = {}
+    part_paths: dict = {}
+
+    def _worker_loop(wid: int):
+        part_path = os.path.join(output_dir, f"{base_name}.summary_filter.part{wid:02d}.tsv")
+        part_paths[wid] = part_path
+        # 确保空文件存在（无表头；主文件已写表头）
+        open(part_path, 'wb').close()
+        local = defaultdict(int)
+        n_batches = 0
+        while True:
+            chunk = q.get()
+            if chunk is None:  # 哨兵
+                q.task_done()
+                break
+            df_part, lc = _process_chunk(chunk)
+            # 直接写入该 worker 的 part 文件，避免全局写锁争用
+            df_part.to_csv(part_path, sep='\t', header=False, index=False, mode='a', na_rep='nan')
+            # 合并计数
+            for k, v in lc.items():
+                local[k] += v
+            n_batches += 1
+            q.task_done()
+        worker_counts[wid] = local
+        _log(f"[worker-{wid}] 退出；处理分块 {n_batches} 个 → {os.path.basename(part_path)}")
+
+    # 启动 worker 线程
+    threads = []
+    for wid in range(max_workers):
+        t = threading.Thread(target=_worker_loop, args=(wid,), daemon=True)
+        t.start()
+        threads.append(t)
+    def _log(msg): print(msg)
+    _log(f"[summary] 已启动 {len(threads)} 个 worker 线程进行并行处理")
+
+    # 生产者：读取分块并投递到队列
+    reader = pd.read_csv(
+        in_path, sep='\t', usecols=usecols, dtype='string',
+        chunksize=chunk_size, engine='c', na_values=['nan','NaN','NA','.']
+    )
+    for chunk in reader:
+        total_chunks += 1
+        total_rows += len(chunk)
+        q.put(chunk)  # 阻塞式，结合 queue 大小形成背压
+        if total_chunks % 10 == 0:
+            print(f"[summary] 已投递 {total_chunks} 个分块，共 {total_rows:,} 行 … 队列积压 {q.qsize()} / {q.maxsize}")
+
+    # 投递哨兵，通知所有 worker 退出
+    for _ in range(max_workers):
+        q.put(None)
+    q.join()  # 等待所有任务完成
+
+    # 汇总计数
+    for wid, lc in worker_counts.items():
+        with counts_lock:
+            for k, v in lc.items():
+                counts[k] += v
+
+    print(f"[summary] 完成。总分块数: {total_chunks}, 总行数: {total_rows:,}。")
+
+    # 合并所有 part 文件到最终 out_summary（已写过表头，这里仅追加数据行）
+    if shutil is None:
+        import shutil
+    with open(out_summary, 'a') as fout:
+        for wid in sorted(part_paths.keys()):
+            p = part_paths[wid]
+            if not os.path.exists(p) or os.path.getsize(p) == 0:
+                continue
+            with open(p, 'r') as fin:
+                shutil.copyfileobj(fin, fout)
+    # 清理 part 文件
+    for p in part_paths.values():
+        try:
+            os.remove(p)
+        except Exception:
+            pass
+
+    # 计算每个 GROUP 的总数（GROUP_TOTAL），作为 COUNT 的分母
+    import csv as _csv
+    stat_notes = {
+        'Stat_1': 'IN_TOMMO==True & PASS_TOMMO==True & PASS_GROUP_ROBUST_Z_FILTER==True',
+        'Stat_2': 'IN_TOMMO==True & PASS_TOMMO==True & PASS_GROUP_ROBUST_Z_FILTER==False',
+        'Stat_3': 'IN_TOMMO==True & PASS_TOMMO==False',
+        'Stat_4': 'IN_TOMMO==False',
+        'NA':     '状态不适用/未知（例如缺失值）'
+    }
+    # 计算每个 GROUP 的总数（GROUP_TOTAL），作为 COUNT 的分母
+    group_totals = {}
+    for (g, fs), c in counts.items():
+        if g not in group_totals:
+            group_totals[g] = 0
+        group_totals[g] += c
+    with open(out_stats, 'w', newline='') as fo:
+        # 注释行（以 # 开头）
+        fo.write('# FILTER_STAT 含义:\n')
+        for k in ('Stat_1','Stat_2','Stat_3','Stat_4'):
+            fo.write(f"#   {k}: {stat_notes[k]}\n")
+        fo.write('#   NA: 未能归类的记录或缺失\n')
+        # 表头（新增 GROUP_TOTAL 与 PERCENT 两列）
+        w = _csv.writer(fo, delimiter='\t')
+        w.writerow(['GROUP','FILTER_STAT','COUNT','GROUP_TOTAL','PERCENT'])
+        # 数据行：附带各 GROUP 的总数与百分比（小数点后4位）
+        for (g, fs), c in sorted(counts.items()):
+            gt = group_totals.get(g, 0)
+            if gt:
+                pct_str = f"{(c / gt) * 100:.4f}%"
+            else:
+                pct_str = 'nan'
+            w.writerow([g, fs, c, gt, pct_str])
+
+    dt = time.time() - t0
+    print(f"[summary] 耗时: {dt/60:.2f} min; 输出: {out_summary}; 统计: {out_stats}")
+
+    return out_summary
+
+
+def filter_variants_by_group_and_stat(
+    out_summary: str,
+    config_json: str,
+    output_dir: Optional[str] = None,
+    chunk_size: int = 1_000_000,
+    max_workers: Optional[int] = None,
+) -> Dict[str, str]:
+    """
+    函数名称：filter_variants_by_group_and_stat
+    ========================================
+    【功能】
+    基于 summarize_variants_filter_from_manifest 产出的 `out_summary` 表，按照 **配置 JSON** 中为
+    各 GROUP 指定的 FILTER_STAT 白名单，筛选出对应的 VARIANT_ID，并分别生成 3 个文件：
+      - rare 组：<basename>.rare.selected_variants.tsv
+      - lowfreq 组：<basename>.lowfreq.selected_variants.tsv
+      - common 组：<basename>.common.selected_variants.tsv
+    文件第一行写入表头 `VARIANT_ID`（此表头行不计入变体列表，满足“第一行这个 VARIANT_ID 不用纳入进来”的要求）。
+
+    【输入】
+    - out_summary : str
+        `*.summary_filter.tsv`（至少包含列：VARIANT_ID, GROUP, FILTER_STAT）。
+    - config_json : str
+        JSON 配置文件路径，指定每个 GROUP 允许保留的 FILTER_STAT 集合。
+        示例（保存为 config.json）：
+        {
+          "rare":    ["Stat_1", "Stat_2", "Stat_3", "Stat_4"],
+          "lowfreq": ["Stat_1"],
+          "common":  ["Stat_1"]
+        }
+    - output_dir : Optional[str]
+        输出目录；默认与 out_summary 同目录。
+    - chunk_size : int
+        Pandas 分块大小（默认 1,000,000 行）。
+    - max_workers : Optional[int]
+        并行 worker 数（默认 min(8, CPU)）。
+
+    【输出】
+    - 返回 dict：{'rare': path_rare, 'lowfreq': path_low, 'common': path_common}
+      每个文件均只包含一列 `VARIANT_ID`，已按 **CHROM: chr1..chr22 主序，POS 次序** 排好。
+
+    【排序规则】
+    - VARIANT_ID 形如 CHROM:POS:REF:ALT，按 CHROM 的自然顺序（chr1..chr22）分桶，并在每个桶内按 POS 升序。
+    - 若 CHROM 不在 {chr1..chr22}，将被忽略（仅输出常染 1–22）。
+
+    【实现要点（面向大文件内存安全）】
+    1) 读入分块（chunksize），仅保留所需列，并**并行**处理过滤逻辑；
+    2) 对每个 GROUP，采用“每条染色体一个临时文件”的外排序策略：临时写入 `POS\\tVARIANT_ID`；
+    3) 末尾再对每个染色体临时文件进行排序并合并写回最终文件；
+    4) 最终文件第一行写入 `VARIANT_ID` 表头。
+    """
+    import os, json, shutil, threading, tempfile, queue, concurrent.futures
+    from typing import Dict, Tuple, List
+    import pandas as pd
+
+    # ---- 路径与输出 ----
+    out_summary = os.path.abspath(out_summary)
+    if output_dir is None:
+        output_dir = os.path.dirname(out_summary) or os.getcwd()
+    os.makedirs(output_dir, exist_ok=True)
+
+    base = os.path.basename(out_summary)
+    out_paths = {
+        'rare':    os.path.join(output_dir, f"{base}.rare.selected_variants.tsv"),
+        'lowfreq': os.path.join(output_dir, f"{base}.lowfreq.selected_variants.tsv"),
+        'common':  os.path.join(output_dir, f"{base}.common.selected_variants.tsv"),
+    }
+
+    # ---- 读取 JSON 配置 ----
+    with open(config_json, 'r') as f:
+        cfg = json.load(f)
+    allow_stats = {
+        'rare':    set(map(str, cfg.get('rare',    []))),
+        'lowfreq': set(map(str, cfg.get('lowfreq', []))),
+        'common':  set(map(str, cfg.get('common',  []))),
+    }
+
+    # ---- 染色体桶（chr1..chr22）与临时文件结构 ----
+    chrom_buckets = [f"chr{i}" for i in range(1, 23)]
+    workdir = tempfile.mkdtemp(prefix="filter_gstat_")
+    tmp_paths: Dict[str, Dict[str, str]] = {g: {} for g in out_paths}
+    locks: Dict[str, Dict[str, threading.Lock]] = {g: {} for g in out_paths}
+    for g in out_paths:
+        gdir = os.path.join(workdir, g)
+        os.makedirs(gdir, exist_ok=True)
+        for ch in chrom_buckets:
+            p = os.path.join(gdir, f"{ch}.pos_vid.tmp")
+            open(p, 'wb').close()
+            tmp_paths[g][ch] = p
+            locks[g][ch] = threading.Lock()
+
+    # ---- 并行设置 ----
+    if max_workers is None:
+        try:
+            import multiprocessing as _mp
+            max_workers = max(1, min(8, _mp.cpu_count()))
+        except Exception:
+            max_workers = 4
+
+    def _parse_vid(vid: str) -> Tuple[str, int]:
+        parts = vid.split(':', 3)
+        if len(parts) != 4:
+            raise ValueError("bad vid")
+        chrom, pos = parts[0], int(parts[1])
+        return chrom, pos
+
+    def _process_chunk(chunk: pd.DataFrame) -> int:
+        # 仅保留必要列
+        c = chunk[['VARIANT_ID', 'GROUP', 'FILTER_STAT']].copy()
+        c['GROUP'] = c['GROUP'].astype('string')
+        c['FILTER_STAT'] = c['FILTER_STAT'].astype('string')
+        c = c[c['GROUP'].isin(['rare','lowfreq','common'])]
+        if c.empty:
+            return 0
+
+        out_frames = []
+        for g in ('rare','lowfreq','common'):
+            allow = allow_stats.get(g, set())
+            if not allow:
+                continue
+            sub = c[(c['GROUP'] == g) & (c['FILTER_STAT'].isin(allow))][['VARIANT_ID']]
+            if not sub.empty:
+                sub['GROUP'] = g
+                out_frames.append(sub)
+        if not out_frames:
+            return 0
+
+        cc = pd.concat(out_frames, ignore_index=True)
+        vids = cc['VARIANT_ID'].astype('string').tolist()
+        groups = cc['GROUP'].tolist()
+
+        kept = 0
+        for vid, g in zip(vids, groups):
+            try:
+                chrom, pos = _parse_vid(vid)
+            except Exception:
+                continue
+            if chrom not in chrom_buckets:
+                continue
+            with locks[g][chrom]:
+                with open(tmp_paths[g][chrom], 'a') as fo:
+                    fo.write(f"{pos}\t{vid}\n")
+            kept += 1
+        return kept
+
+    # ---- 生产者-消费者并发框架（队列） ----
+    q: "queue.Queue[pd.DataFrame]" = queue.Queue(maxsize=max(2, max_workers*3))
+    stop = object()
+    stats = {'chunks': 0, 'rows': 0, 'kept': 0}
+
+    def _worker():
+        while True:
+            obj = q.get()
+            if obj is stop:
+                q.task_done()
+                break
+            kept_local = _process_chunk(obj)
+            stats['kept'] += kept_local
+            q.task_done()
+
+    workers = []
+    for _ in range(max_workers):
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+        workers.append(t)
+
+    usecols = ['VARIANT_ID','GROUP','FILTER_STAT']
+    for chunk in pd.read_csv(out_summary, sep='\t', usecols=usecols, dtype='string',
+                             chunksize=chunk_size, engine='c',
+                             na_values=['nan','NaN','NA','.']):
+        stats['chunks'] += 1
+        stats['rows'] += len(chunk)
+        q.put(chunk)
+
+    for _ in workers:
+        q.put(stop)
+    q.join()
+    for t in workers:
+        t.join()
+
+    # ---- 合并：按 chr1..chr22 + POS 排序并写最终文件（无表头，仅 VARIANT_ID，每行一个） ----
+    for g, outp in out_paths.items():
+        # 初始化空文件，不写入表头
+        open(outp, 'w').close()
+        total_written = 0
+        for ch in chrom_buckets:
+            tmp = tmp_paths[g][ch]
+            if not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
+                continue
+            pos_vids: List[Tuple[int, str]] = []
+            with open(tmp, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        pos_s, vid = line.split('\t', 1)
+                        pos = int(pos_s)
+                    except Exception:
+                        continue
+                    pos_vids.append((pos, vid))
+            if pos_vids:
+                pos_vids.sort(key=lambda x: x[0])
+                with open(outp, 'a') as fo:
+                    fo.write('\n'.join(v for _, v in pos_vids) + '\n')
+                total_written += len(pos_vids)
+        print(f"[filter] {g}: wrote {total_written:,} variants -> {outp}")
+
+    # ---- 清理临时目录 ----
+    try:
+        shutil.rmtree(workdir)
+    except Exception:
+        pass
+
+    return out_paths
+
+
+# new function to use plink2 (default /home/b/b37974/plink2) to subset plink files based on list of variants in out_paths
+

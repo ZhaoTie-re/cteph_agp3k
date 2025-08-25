@@ -704,6 +704,33 @@ process ToMMoPanelCompare {
     """
 }
 
+process ToMMoPanelThr {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '36h'
+    tag "ToMMoPanelThr"
+
+    publishDir "${params.outdir}/18.tommo_panel_thr", mode: 'symlink'
+
+    input:
+    file(variant_qc_with_tommo) from tommo_panel_compare_out
+
+    output:
+    file('*.pdf')
+    file('*.tsv.gz')
+    tuple file('knee_variants.rare.tsv'), file('knee_variants.lowfreq.tsv'), file('knee_variants.common.tsv') into tommo_panel_thr_variant_out
+    file('manifest.json') into tommo_panel_thr_out
+
+    script:
+    """
+    source activate cteph_geno_pro
+    python ${params.scriptDir}/panel_thr_main.py \
+        --variant_qc_with_tommo ${variant_qc_with_tommo} \
+        --chunk_size 500000 \
+        --knee_weight_y_map '{"rare": 1.0, "lowfreq": 4.0, "common": 4.0}'
+    """
+}
+
 // process sqc_miss_het {
 //     executor 'slurm'
 //     queue 'gr10478b'
