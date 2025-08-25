@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Optional
 from typing import Dict
 import concurrent.futures
+import threading
 import pandas as pd
 import numpy as np
 from itertools import islice
@@ -866,6 +867,13 @@ def build_grouped_variant_tables(
     import pandas as pd
     from datetime import datetime
 
+    # ---- 并行参数：合理设置线程数（不改动函数入参与返回） ----
+    try:
+        import multiprocessing as _mp
+        _MAX_WORKERS = max(1, min(8, _mp.cpu_count()))
+    except Exception:
+        _MAX_WORKERS = 4
+
     # ---- 路径与输出命名 ----
     in_path = os.path.abspath(variant_qc_with_tommo)
     # 将所有最终输出放在“当下运行文件夹”（当前工作目录）下；
@@ -906,7 +914,7 @@ def build_grouped_variant_tables(
         'VARIANT_ID', 'CTRL_MAF', 'IN_TOMMO', 'TOMMO_FILTER', 'CTRL_AAF', 'TOMMO_AAF'
     ]
 
-    # ---- 第一遍：收集各主分组(c)的 DIFF ----
+    # ---- 第一遍（并行计算、串行落盘）：收集各主分组(c)的 DIFF ----
     diff_tmp_paths = {
         'rare':   os.path.join(workdir, 'diff_rare.txt'),
         'lowfreq':os.path.join(workdir, 'diff_lowfreq.txt'),
@@ -916,25 +924,56 @@ def build_grouped_variant_tables(
     for p in diff_tmp_paths.values():
         open(p, 'w').close()
 
-    total_rows = 0
-    for chunk in pd.read_csv(in_path, sep='\t', usecols=usecols, dtype='string', chunksize=chunk_size, engine='c'):
-        total_rows += len(chunk)
+    def _first_pass_chunk(chunk: pd.DataFrame) -> Dict[str, np.ndarray]:
+        """工作线程：从一个分块中提取 (c_in_pass) 的 DIFF，按主分组返回数组。磁盘写入在主线程完成。"""
         mg = _assign_main_group(chunk['CTRL_MAF'])
         sg = _assign_subgroup(chunk['IN_TOMMO'], chunk['TOMMO_FILTER'])
         # 仅 (c) 组且两列可数值化
         mask_c = (sg == 'c_in_pass') & chunk['CTRL_AAF'].notna() & chunk['TOMMO_AAF'].notna()
         if not mask_c.any():
-            continue
+            return {'rare': np.array([], dtype='float64'),
+                    'lowfreq': np.array([], dtype='float64'),
+                    'common': np.array([], dtype='float64')}
         csub = chunk.loc[mask_c, ['CTRL_AAF', 'TOMMO_AAF']].apply(pd.to_numeric, errors='coerce')
         csub['DIFF'] = csub['CTRL_AAF'] - csub['TOMMO_AAF']
-        # 按主分组分别写入
+        out = {}
         for gname in ('rare', 'lowfreq', 'common'):
             idx = (mg[mask_c] == gname)
             if idx.any():
-                vals = csub.loc[idx.values, 'DIFF'].dropna().tolist()
-                if vals:
+                vals = csub.loc[idx.values, 'DIFF'].dropna().to_numpy(dtype='float64')
+            else:
+                vals = np.array([], dtype='float64')
+            out[gname] = vals
+        return out
+
+    total_rows = 0
+    total_chunks = 0
+    print(f"[第一遍] 开始扫描 {in_path}，并行处理分块以收集 DIFF ...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
+        futures = []
+        for chunk in pd.read_csv(in_path, sep='\t', usecols=usecols, dtype='string', chunksize=chunk_size, engine='c'):
+            total_rows += len(chunk)
+            total_chunks += 1
+            futures.append(ex.submit(_first_pass_chunk, chunk))
+            # 控制队列长度，避免内存占用过高
+            if len(futures) >= _MAX_WORKERS * 4:
+                done, futures = futures[:], []
+                for fut in concurrent.futures.as_completed(done):
+                    res = fut.result()
+                    for gname, arr in res.items():
+                        if arr.size:
+                            with open(diff_tmp_paths[gname], 'a') as f:
+                                f.write('\n'.join(f"{v:.10g}" for v in arr) + '\n')
+                print(f"[第一遍] 并行已完成 {total_chunks} 个分块，共 {total_rows:,} 行 ...")
+        # flush remaining
+        for fut in concurrent.futures.as_completed(futures):
+            res = fut.result()
+            for gname, arr in res.items():
+                if arr.size:
                     with open(diff_tmp_paths[gname], 'a') as f:
-                        f.write('\n'.join(f"{v:.10g}" for v in vals) + '\n')
+                        f.write('\n'.join(f"{v:.10g}" for v in arr) + '\n')
+        print(f"[第一遍] 并行已完成 {total_chunks} 个分块，共 {total_rows:,} 行 ...")
+    print(f"[第一遍] 完成。总分块数: {total_chunks}, 总行数: {total_rows:,}.")
 
     # 计算各主分组的 median 与 MAD
     from scipy.stats import median_abs_deviation
@@ -965,20 +1004,22 @@ def build_grouped_variant_tables(
         for h in out_files[g]:
             out_files[g][h].write(header_line)
 
-    # ---- 第二遍：路由写出，并计算 ROBUST_Z（仅 c 组） ----
+    # ---- 第二遍（并行计算、串行落盘）：路由写出，并计算 ROBUST_Z（仅 c 组） ----
     counts = {g: {h: 0 for h in ('a_not_in_tommo','b_in_nonpass','c_in_pass')} for g in ('rare','lowfreq','common')}
-    for chunk in pd.read_csv(in_path, sep='\t', dtype='string', chunksize=chunk_size, engine='c'):
+
+    # 为每个输出文件准备一个锁，保证写入的原子性（顺序无关但避免交叉）
+    _locks = {g: {h: threading.Lock() for h in out_files[g]} for g in out_files}
+
+    def _second_pass_chunk(chunk: pd.DataFrame) -> Dict[Tuple[str, str], pd.DataFrame]:
         # 统一列
         for col in ['CTRL_AAF','TOMMO_AAF','CTRL_MAF']:
             if col in chunk.columns:
                 chunk[col] = pd.to_numeric(chunk[col], errors='coerce')
         mg = _assign_main_group(chunk['CTRL_MAF'])
         sg = _assign_subgroup(chunk['IN_TOMMO'], chunk['TOMMO_FILTER'])
-
-        # 计算 DIFF（备用，只有 c 组才会写入数值）
         diff = (chunk['CTRL_AAF'] - chunk['TOMMO_AAF']).astype('float64')
 
-        # 为每个 (main, sub) 选择并写出
+        outdfs: Dict[Tuple[str, str], pd.DataFrame] = {}
         for main_g in ('rare','lowfreq','common'):
             mask_main = (mg == main_g)
             if not mask_main.any():
@@ -988,10 +1029,8 @@ def build_grouped_variant_tables(
                 if not mask.any():
                     continue
                 subdf = chunk.loc[mask, :].copy()
-                # 附加分组列
                 subdf['GROUP_MAIN'] = main_g
                 subdf['GROUP_SUB'] = sub_g
-                # 计算 ROBUST_Z（仅 c 组）
                 subdf['DIFF'] = pd.NA
                 subdf['ROBUST_Z'] = pd.NA
                 if sub_g == 'c_in_pass':
@@ -1001,18 +1040,47 @@ def build_grouped_variant_tables(
                         subdf['DIFF'] = diff.loc[mask].values
                         subdf['ROBUST_Z'] = ((subdf['DIFF'] - med) / (1.4826 * mad)).astype('float64')
                     elif med is not None and (mad == 0):
-                        # MAD==0：全与中位数一致；ROBUST_Z 置为 0
                         subdf['DIFF'] = diff.loc[mask].values
                         subdf['ROBUST_Z'] = 0.0
                     else:
-                        # 缺少 robust 统计，保持 NaN
                         subdf['DIFF'] = diff.loc[mask].values
-
-                # 只保留所需列顺序并写出
                 subdf = subdf[['VARIANT_ID','MAF','VMISS','CASE_AAF','CTRL_AAF','CTRL_MAF','CASE_HWE','CTRL_HWE','IN_TOMMO','TOMMO_AAF','TOMMO_FILTER','GROUP_MAIN','GROUP_SUB','DIFF','ROBUST_Z']]
+                outdfs[(main_g, sub_g)] = subdf
+        return outdfs
+
+    # 流式读取 → 并行转换 → 主线程串行写出
+    total_rows2 = 0
+    total_chunks2 = 0
+    print(f"[第二遍] 开始扫描 {in_path}，并行处理分块并路由写出 ...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
+        futures = []
+        for chunk in pd.read_csv(in_path, sep='\t', dtype='string', chunksize=chunk_size, engine='c'):
+            futures.append(ex.submit(_second_pass_chunk, chunk))
+            total_rows2 += len(chunk)
+            total_chunks2 += 1
+            if len(futures) >= _MAX_WORKERS * 2:
+                done, futures = futures[:], []
+                for fut in concurrent.futures.as_completed(done):
+                    res = fut.result()
+                    for (main_g, sub_g), subdf in res.items():
+                        if len(subdf) == 0:
+                            continue
+                        out = out_files[main_g][sub_g]
+                        with _locks[main_g][sub_g]:
+                            subdf.to_csv(out, sep='\t', header=False, index=False, na_rep='nan')
+                        counts[main_g][sub_g] += len(subdf)
+                print(f"[第二遍] 并行已完成 {total_chunks2} 个分块，共 {total_rows2:,} 行 ...")
+        for fut in concurrent.futures.as_completed(futures):
+            res = fut.result()
+            for (main_g, sub_g), subdf in res.items():
+                if len(subdf) == 0:
+                    continue
                 out = out_files[main_g][sub_g]
-                subdf.to_csv(out, sep='\t', header=False, index=False, na_rep='nan')
+                with _locks[main_g][sub_g]:
+                    subdf.to_csv(out, sep='\t', header=False, index=False, na_rep='nan')
                 counts[main_g][sub_g] += len(subdf)
+        print(f"[第二遍] 并行已完成 {total_chunks2} 个分块，共 {total_rows2:,} 行 ...")
+    print(f"[第二遍] 完成。总分块数: {total_chunks2}, 总行数: {total_rows2:,}.")
 
     # 关闭文件
     for g in out_files:
@@ -1096,6 +1164,13 @@ def summarize_c_in_pass_thresholds(
         output_dir = os.path.dirname(manifest_path) or os.getcwd()
     os.makedirs(output_dir, exist_ok=True)
 
+    # —— 并行设置（不改变输入输出）：合理控制并发线程数 ——
+    try:
+        import multiprocessing as _mp
+        _MAX_WORKERS = max(1, min(8, _mp.cpu_count()))
+    except Exception:
+        _MAX_WORKERS = 4
+
     files_map = manifest.get('files', {})
     if not files_map:
         raise ValueError("manifest.json 缺少 'files' 字段，或为空。")
@@ -1109,54 +1184,111 @@ def summarize_c_in_pass_thresholds(
     manifest[out_key] = manifest.get(out_key, {})
 
     def _first_pass_max_abs(path: str) -> float:
-        """第一遍：扫描 ROBUST_Z 的绝对值最大值。忽略 NaN。"""
+        """第一遍：并行扫描 ROBUST_Z 的绝对值最大值。忽略 NaN。
+        采用线程池对每个 chunk 的局部最大值并行计算，再在主线程归约为全局最大值。
+        同时打印中文进度：分块数与并行处理提示。
+        """
+        import concurrent.futures
         max_abs = 0.0
         usecols = ['ROBUST_Z']
-        for chunk in pd.read_csv(path, sep='\t', usecols=usecols, dtype='float64',
-                                 chunksize=chunk_size, engine='c', na_values=['nan', 'NaN', 'NA', '.']):
+        total_chunks = 0
+        total_rows = 0
+        print(f"[第一遍] 开始扫描 {path}，并行处理分块以计算 max(|ROBUST_Z|) ...")
+
+        def _local_max(chunk) -> float:
             if 'ROBUST_Z' not in chunk:
-                continue
+                return 0.0
             z = chunk['ROBUST_Z'].to_numpy(dtype='float64', copy=False)
             if z.size == 0:
-                continue
-            z = z[~np.isnan(z)]
+                return 0.0
+            z = z[~np.isnan(z)]  # 去 NaN
             if z.size == 0:
-                continue
-            m = float(np.max(np.abs(z)))
-            if m > max_abs:
-                max_abs = m
+                return 0.0
+            return float(np.max(np.abs(z)))
+
+        futures = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
+            for chunk in pd.read_csv(path, sep='\t', usecols=usecols, dtype='float64',
+                                     chunksize=chunk_size, engine='c', na_values=['nan', 'NaN', 'NA', '.']):
+                total_chunks += 1
+                total_rows += len(chunk)
+                futures.append(ex.submit(_local_max, chunk))
+                # 背压：控制在飞任务，防止内存上涨
+                if len(futures) >= _MAX_WORKERS * 4:
+                    done, futures = futures[:], []
+                    for fut in concurrent.futures.as_completed(done):
+                        loc = fut.result()
+                        if loc > max_abs:
+                            max_abs = loc
+                    print(f"[第一遍] 并行已完成 {total_chunks} 个分块，共 {total_rows:,} 行 ...")
+            # flush remaining
+            for fut in concurrent.futures.as_completed(futures):
+                loc = fut.result()
+                if loc > max_abs:
+                    max_abs = loc
+        print(f"[第一遍] 完成。总分块数: {total_chunks}, 总行数: {total_rows:,}, 最大绝对值: {max_abs}")
         return max_abs
 
     def _second_pass_summary(path: str, max_int: int) -> pd.DataFrame:
-        """第二遍：对 t=1..max_int（步长0.2）统计 count 与 MSE（仅使用 CTRL_AAF/TOMMO_AAF 均可用的行）。"""
-        thresholds = np.arange(1.0, max_int + 0.2, 0.2, dtype='float64')  # 1.0, 1.2, 1.4, ..., max_int
-        sse = np.zeros(thresholds.shape, dtype='float64')
-        cnt = np.zeros(thresholds.shape, dtype='int64')
+        """第二遍：并行累计 t=1..max_int（步长0.2）下的 count 与 SSE，最终计算 MSE。
+        返回包含列：threshold_abs_robust_z, count_variants, mse_ctrl_vs_tommo。
+        同时打印中文进度：分块数与并行处理提示。
+        """
+        import concurrent.futures
+        thresholds = np.arange(1.0, max_int + 0.2, 0.2, dtype='float64')  # 1.0, 1.2, ..., max_int
+        k = thresholds.size
+        sse_total = np.zeros(k, dtype='float64')
+        cnt_total = np.zeros(k, dtype='int64')
         usecols = ['VARIANT_ID', 'CTRL_AAF', 'TOMMO_AAF', 'ROBUST_Z']
-        for chunk in pd.read_csv(path, sep='\t', usecols=usecols, dtype='string',
-                                 chunksize=chunk_size, engine='c', na_values=['nan', 'NaN', 'NA', '.']):
+        total_chunks = 0
+        total_rows = 0
+        print(f"[第二遍] 开始统计 {path}，并行处理阈值 1..{max_int} (步长=0.2) ...")
+
+        def _acc_chunk(chunk) -> tuple:
             # 转换类型并构建掩码
             z = pd.to_numeric(chunk['ROBUST_Z'], errors='coerce').to_numpy(dtype='float64')
             ca = pd.to_numeric(chunk['CTRL_AAF'], errors='coerce').to_numpy(dtype='float64')
             ta = pd.to_numeric(chunk['TOMMO_AAF'], errors='coerce').to_numpy(dtype='float64')
             valid = (~np.isnan(z)) & (~np.isnan(ca)) & (~np.isnan(ta))
             if not np.any(valid):
-                continue
+                return (np.zeros(k, dtype='float64'), np.zeros(k, dtype='int64'), True)
             z_abs = np.abs(z[valid])
             err2 = (ca[valid] - ta[valid]) ** 2
-            # 对每个阈值做累计（阈值个数通常不大，直接循环更直观）
+            sse = np.zeros(k, dtype='float64')
+            cnt = np.zeros(k, dtype='int64')
             for i, t in enumerate(thresholds):
                 mask = z_abs < t
                 if np.any(mask):
-                    cnt[i] += int(mask.sum())
-                    sse[i] += float(err2[mask].sum())
-        # 输出 DataFrame
-        mse = np.full_like(sse, fill_value=np.nan, dtype='float64')
-        nz = cnt > 0
-        mse[nz] = sse[nz] / cnt[nz]
+                    cnt[i] = int(mask.sum())
+                    sse[i] = float(err2[mask].sum())
+            return (sse, cnt, False)
+
+        futures = []
+        with concurrent.futures.ThreadPoolExecutor(max_workers=_MAX_WORKERS) as ex:
+            for chunk in pd.read_csv(path, sep='\t', usecols=usecols, dtype='string',
+                                     chunksize=chunk_size, engine='c', na_values=['nan', 'NaN', 'NA', '.']):
+                total_chunks += 1
+                total_rows += len(chunk)
+                futures.append(ex.submit(_acc_chunk, chunk))
+                if len(futures) >= _MAX_WORKERS * 3:
+                    done, futures = futures[:], []
+                    for fut in concurrent.futures.as_completed(done):
+                        sse, cnt, empty = fut.result()
+                        sse_total += sse
+                        cnt_total += cnt
+                    print(f"[第二遍] 并行已完成 {total_chunks} 个分块，共 {total_rows:,} 行 ...")
+            for fut in concurrent.futures.as_completed(futures):
+                sse, cnt, empty = fut.result()
+                sse_total += sse
+                cnt_total += cnt
+        print(f"[第二遍] 完成。总分块数: {total_chunks}, 总行数: {total_rows:,}.")
+
+        mse = np.full_like(sse_total, fill_value=np.nan, dtype='float64')
+        nz = cnt_total > 0
+        mse[nz] = sse_total[nz] / cnt_total[nz]
         out = pd.DataFrame({
             'threshold_abs_robust_z': thresholds,
-            'count_variants': cnt,
+            'count_variants': cnt_total,
             'mse_ctrl_vs_tommo': mse,
         })
         return out
@@ -1508,43 +1640,65 @@ def plot_c_in_pass_threshold_tradeoff(
             pdf.savefig(fig2, bbox_inches='tight')
             plt.close(fig2)
 
+        # ===== 新增页面并行渲染：按 knee 阈值选中的变体散点（X=TOMMO_AAF, Y=CTRL_AAF）=====
+        # 使用线程池并行绘制每个分组的 PNG，全部完成后再合成一页 PDF
+        import concurrent.futures
+
         png_paths = []
         titles2 = []
         subtitles = []
 
-        for disp_title, mg_key in [('Rare Variant', 'rare'), ('Low Frequency Variant', 'lowfreq'), ('Common Variant', 'common')]:
-            # 需要该组的 knee 阈值与 c_in_pass 文件
+        # 需要：各分组的 c_in_pass 路径 + knee 阈值
+        files_map = manifest.get('files', {})
+        title_map2 = {
+            'rare': 'Rare Variant (<0.01) (PASS ToMMo)',
+            'lowfreq': 'Low Frequency Variant (0.01~0.05) (PASS ToMMo)',
+            'common': 'Common Variant (>0.05) (PASS ToMMo)'
+        }
+
+        # 并行渲染的工作函数（每个线程独立创建 Figure，线程安全）
+        def _render_one_group_png(mg_key: str, disp_title: str):
             kn = knee_notes.get(mg_key)
             c_path = files_map.get(mg_key, {}).get('c_in_pass')
             disp = title_map2.get(mg_key, disp_title)
             if not kn or not c_path or not os.path.exists(c_path):
-                png_paths.append(None)
-                titles2.append(disp)
-                subtitles.append('')
-                continue
+                return (mg_key, None, disp, '', None, 0)
+
             thr = float(kn.get('threshold_abs_robust_z')) if kn.get('threshold_abs_robust_z') is not None else None
             if thr is None or not np.isfinite(thr):
-                png_paths.append(None)
-                titles2.append(disp)
-                subtitles.append('')
-                continue
+                return (mg_key, None, disp, '', None, 0)
 
-            # 读取该分组文件，筛选 |ROBUST_Z| < thr，且两侧频率可用
             cols_need = ['VARIANT_ID','CTRL_AAF','TOMMO_AAF','ROBUST_Z']
             pts = []  # (TOMMO_AAF, CTRL_AAF, TYPE)
             atcg = {"A","T","C","G"}
+            # Prepare output TSV for selected VARIANT_IDs
+            out_tsv_path = os.path.join(os.path.dirname(output_pdf), f"knee_variants.{mg_key}.tsv")
+            n_written = 0
+            wrote_header = False
+
             for chunk in pd.read_csv(c_path, sep='\t', usecols=cols_need, dtype='string',
                                      chunksize=500_000, engine='c', na_values=['nan','NaN','NA','.']):
                 z = pd.to_numeric(chunk['ROBUST_Z'], errors='coerce')
                 ca = pd.to_numeric(chunk['CTRL_AAF'], errors='coerce')
                 ta = pd.to_numeric(chunk['TOMMO_AAF'], errors='coerce')
                 mask = z.notna() & ca.notna() & ta.notna() & (z.abs() < thr)
+                # Stream-write VARIANT_IDs to per-group TSV
+                if mask.any():
+                    vids = chunk.loc[mask, 'VARIANT_ID'].astype('string')
+                    # Write header lazily
+                    if not wrote_header:
+                        with open(out_tsv_path, 'w') as fo:
+                            fo.write('VARIANT_ID\n')
+                        wrote_header = True
+                    with open(out_tsv_path, 'a') as fo:
+                        fo.write('\n'.join(vids.tolist()) + '\n')
+                    n_written += int(mask.sum())
                 if not mask.any():
                     continue
                 sub = chunk.loc[mask, ['VARIANT_ID']].copy()
                 sub['CTRL_AAF'] = ca[mask].to_numpy()
                 sub['TOMMO_AAF'] = ta[mask].to_numpy()
-                # 判定 SNP / InDel（严格单碱基）
+
                 def _typ(vid):
                     if not isinstance(vid, str):
                         return 'InDel'
@@ -1557,20 +1711,23 @@ def plot_c_in_pass_threshold_tradeoff(
                     return 'InDel'
                 sub['TYPE'] = sub['VARIANT_ID'].apply(_typ)
                 pts.append(sub[['TOMMO_AAF','CTRL_AAF','TYPE']])
+
             if pts:
                 df_pts = pd.concat(pts, ignore_index=True)
             else:
                 df_pts = pd.DataFrame(columns=['TOMMO_AAF','CTRL_AAF','TYPE'])
 
-            # 绘制到单独 PNG
+            # 绘制各自 PNG（单独 Figure，避免线程共享状态）
             fpng, axpng = plt.subplots(figsize=(6,6))
             if not df_pts.empty:
                 is_snp = df_pts['TYPE'].eq('SNP')
                 is_indel = df_pts['TYPE'].eq('InDel')
                 if is_snp.any():
-                    axpng.scatter(df_pts.loc[is_snp,'TOMMO_AAF'], df_pts.loc[is_snp,'CTRL_AAF'], s=16, alpha=0.7, linewidths=0, label='SNP', color='#000000', zorder=3)
+                    axpng.scatter(df_pts.loc[is_snp,'TOMMO_AAF'], df_pts.loc[is_snp,'CTRL_AAF'],
+                                  s=16, alpha=0.7, linewidths=0, label='SNP', color='#000000', zorder=3)
                 if is_indel.any():
-                    axpng.scatter(df_pts.loc[is_indel,'TOMMO_AAF'], df_pts.loc[is_indel,'CTRL_AAF'], s=18, alpha=0.8, linewidths=0, label='InDel', color='#CC79A7', zorder=4)
+                    axpng.scatter(df_pts.loc[is_indel,'TOMMO_AAF'], df_pts.loc[is_indel,'CTRL_AAF'],
+                                  s=18, alpha=0.8, linewidths=0, label='InDel', color='#CC79A7', zorder=4)
             else:
                 axpng.text(0.5, 0.5, 'No Data', ha='center', va='center')
             axpng.plot([0,1],[0,1], linestyle=(0,(4,2)), linewidth=1.0, color='#CC0000', zorder=10)
@@ -1588,11 +1745,37 @@ def plot_c_in_pass_threshold_tradeoff(
             out_png2 = os.path.join(os.path.dirname(output_pdf), f"knee_scatter_{mg_key}.png")
             fpng.savefig(out_png2, dpi=png_dpi)
             plt.close(fpng)
-            png_paths.append(out_png2)
-            titles2.append(disp)
-            subtitles.append(f"|ROBUST_Z| < {thr:.2f}")
+            return (mg_key, out_png2, disp, f"|ROBUST_Z| < {thr:.2f}", out_tsv_path, n_written)
 
-        _compose_three_pngs_to_pdf_page(png_paths, titles2, subtitles)
+        # 提交三个任务并行执行
+        groups_for_png = [('Rare Variant','rare'), ('Low Frequency Variant','lowfreq'), ('Common Variant','common')]
+        results = {}
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+            fut_map = {ex.submit(_render_one_group_png, mg_key, disp_title): mg_key
+                       for (disp_title, mg_key) in groups_for_png}
+            for fut in concurrent.futures.as_completed(fut_map):
+                mg_key = fut_map[fut]
+                try:
+                    key, path, disp, sub, tsv_path, nsel = fut.result()
+                except Exception:
+                    key, path, disp, sub, tsv_path, nsel = mg_key, None, title_map2.get(mg_key, mg_key), '', None, 0
+                results[key] = (path, disp, sub, tsv_path, nsel)
+
+        # 按固定顺序收集
+        ordered_pngs = []
+        ordered_titles = []
+        ordered_subs = []
+        for _, mg_key in groups_for_png:
+            path, disp, sub, tsv_path, nsel = results.get(mg_key, (None, title_map2.get(mg_key, mg_key), '', None, 0))
+            ordered_pngs.append(path)
+            ordered_titles.append(disp)
+            ordered_subs.append(sub)
+            # 把 TSV 信息并入 knee_notes，以便稍后写回 manifest
+            if mg_key in knee_notes:
+                knee_notes[mg_key]['selected_variants_tsv'] = tsv_path
+                knee_notes[mg_key]['selected_variants_count'] = int(nsel) if nsel is not None else 0
+
+        _compose_three_pngs_to_pdf_page(ordered_pngs, ordered_titles, ordered_subs)
 
     # 将拐点注释写回 manifest.json
     try:
