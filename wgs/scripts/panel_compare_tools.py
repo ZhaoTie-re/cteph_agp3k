@@ -1871,7 +1871,7 @@ def summarize_variants_filter_from_manifest(
     if not in_path:
         raise ValueError("manifest.json 缺少 'input' 字段")
     if output_dir is None:
-        output_dir = os.path.dirname(manifest_path) or os.getcwd()
+        output_dir = os.getcwd()
     os.makedirs(output_dir, exist_ok=True)
 
     # —— 读取每组 selected_variants_tsv → set ——
@@ -2334,5 +2334,262 @@ def filter_variants_by_group_and_stat(
     return out_paths
 
 
-# new function to use plink2 (default /home/b/b37974/plink2) to subset plink files based on list of variants in out_paths
+from typing import Dict, Optional, Tuple, List
+import subprocess
+
+def subset_plink_by_selected_variants(
+    bed_prefix: str,
+    out_prefix: str,
+    selected_paths: Dict[str, str],
+    threads: int = 8,
+    merge_low_common: bool = True,
+    plink2_path: str = "/home/b/b37974/plink2",
+) -> Dict[str, str]:
+    """
+    函数名称：subset_plink_by_selected_variants
+    ========================================
+    【功能】
+    基于 `filter_variants_by_group_and_stat()` 的输出（各 GROUP 的 `VARIANT_ID` 列表），
+    使用 plink2 对给定 bed_prefix 的基因型数据进行子集提取（subset）。
+
+    【输入】
+    - bed_prefix : str
+        plink 二进制基因型前缀（.bed/.bim/.fam）。
+    - out_prefix : str
+        plink2 输出前缀（函数将基于此追加 `.rare`、`.lowfreq_common` 或 `.lowfreq`/`.common`）。
+    - selected_paths : Dict[str, str]
+        `filter_variants_by_group_and_stat()` 的返回字典，形如：
+        {
+          'rare': '/path/to/...rare.selected_variants.tsv',
+          'lowfreq': '/path/to/...lowfreq.selected_variants.tsv',
+          'common': '/path/to/...common.selected_variants.tsv'
+        }
+        每个文件仅一列 `VARIANT_ID`，且可能非常大。
+    - threads : int = 8
+        plink2 的 `--threads` 数量，同时也用于本函数的并发处理数量。
+    - merge_low_common : bool = True
+        若 True：合并 lowfreq 与 common 的变体列表，进行一次 subset（输出后缀 `.lowfreq_common`）。
+        若 False：分别对 rare/lowfreq/common 三组各做一次 subset。
+    - plink2_path : str = '/home/b/b37974/plink2'
+        plink2 可执行文件路径。
+
+    【实现要点】
+    1) 读取 lowfreq 与 common 的 `VARIANT_ID`（当 merge_low_common=True），进行**外排序**：
+       - 兼容 'chr1' 与 '1' 的染色体标记；仅保留 1..22 常染色体；
+       - 采用“每条染色体一个临时文件”的分桶策略，并行处理/写入；
+       - 最终在主线程按 POS 升序合并各桶，写成单列 `VARIANT_ID` 文件；
+    2) 调用 plink2：`plink2 --bfile <bed_prefix> --extract <list.tsv> --make-bed --out <out_prefix.suffix> --threads <threads>`；
+    3) 打印清晰日志（输入/输出、每步耗时、行数、可能的空列表提示）。
+
+    【返回】
+    - 返回字典，键为输出数据集的逻辑名（'rare'、'lowfreq_common' 或 'lowfreq'、'common'），
+      值为对应的 plink2 输出前缀路径（即 `.bed/.bim/.fam` 的公共前缀）。
+    """
+    import os
+    import time
+    import tempfile
+    import math
+    import threading
+    import queue
+
+    t0 = time.time()
+    bed_prefix = os.path.abspath(bed_prefix)
+    out_prefix = os.path.abspath(out_prefix)
+    plink2_path = os.path.abspath(plink2_path)
+
+    if not os.path.exists(bed_prefix + '.bed'):
+        raise FileNotFoundError(f"找不到输入 .bed: {bed_prefix}.bed")
+    if not os.path.exists(bed_prefix + '.bim'):
+        raise FileNotFoundError(f"找不到输入 .bim: {bed_prefix}.bim")
+    if not os.path.exists(bed_prefix + '.fam'):
+        raise FileNotFoundError(f"找不到输入 .fam: {bed_prefix}.fam")
+
+    # --- 工具函数：解析 VARIANT_ID 为 (chrom, pos) 并做标准化 ---
+    def _parse_vid(vid: str) -> Optional[Tuple[str, int]]:
+        if not isinstance(vid, str) or not vid:
+            return None
+        p = vid.split(':', 3)
+        if len(p) != 4:
+            return None
+        chrom = p[0]
+        if chrom.lower().startswith('chr'):
+            chrom = chrom[3:]
+        try:
+            pos = int(p[1])
+        except Exception:
+            return None
+        # 仅保留 1..22
+        if chrom.isdigit():
+            cnum = int(chrom)
+            if 1 <= cnum <= 22:
+                return (f"chr{cnum}", pos)
+        return None
+
+    # --- 内部：将一个变体列表文件分桶到临时文件（每条染色体一个 tmp） ---
+    def _bucketize_variants(list_path: str, tmp_dir: str, label: str) -> Dict[str, str]:
+        chroms = [f"chr{i}" for i in range(1, 23)]
+        paths = {ch: os.path.join(tmp_dir, f"{label}.{ch}.pos_vid.tmp") for ch in chroms}
+        for p in paths.values():
+            open(p, 'wb').close()
+
+        # 生产者-消费者：分块读取 & 并发写桶
+        q: "queue.Queue[List[str]]" = queue.Queue(maxsize=max(2, threads*3))
+        stop = object()
+        locks = {ch: threading.Lock() for ch in chroms}
+
+        def _worker():
+            while True:
+                obj = q.get()
+                if obj is stop:
+                    q.task_done(); break
+                for line in obj:
+                    vid = line.strip()
+                    if not vid or vid == 'VARIANT_ID':
+                        continue
+                    parsed = _parse_vid(vid)
+                    if parsed is None:
+                        continue
+                    ch, pos = parsed
+                    with locks[ch]:
+                        with open(paths[ch], 'a') as fo:
+                            fo.write(f"{pos}\t{vid}\n")
+                q.task_done()
+
+        workers = []
+        for _ in range(max(1, threads)):
+            t = threading.Thread(target=_worker, daemon=True)
+            t.start(); workers.append(t)
+
+        total = 0
+        with open(list_path, 'r') as f:
+            buf: List[str] = []
+            for line in f:
+                buf.append(line)
+                if len(buf) >= 200000:  # ~200k 行一批，避免内存过大
+                    q.put(buf); buf = []
+            if buf:
+                q.put(buf)
+        for _ in workers:
+            q.put(stop)
+        q.join()
+        for t in workers:
+            t.join()
+        return paths
+
+    # --- 合并 lowfreq + common 列表（如需） ---
+    outputs: Dict[str, str] = {}
+    tmp_root = tempfile.mkdtemp(prefix="plink_subset_")
+    try:
+        if merge_low_common:
+            low_path = selected_paths.get('lowfreq')
+            com_path = selected_paths.get('common')
+            if not low_path and not com_path:
+                print("[subset] ⚠️ 未提供 lowfreq/common 变体列表，跳过合并集。")
+            else:
+                print("[subset] 合并 lowfreq + common 变体列表，并进行排序（chr1..22，POS 升序）...")
+                # 先各自分桶
+                merge_dir = os.path.join(tmp_root, 'merge')
+                os.makedirs(merge_dir, exist_ok=True)
+                paths_low = _bucketize_variants(low_path, merge_dir, 'lowfreq') if low_path else {}
+                paths_com = _bucketize_variants(com_path, merge_dir, 'common') if com_path else {}
+
+                # 合并每条染色体桶 & 排序 & 写入最终合并文件
+                merged_list = os.path.join(tmp_root, 'lowfreq_common.merged.sorted.tsv')
+                open(merged_list, 'w').close()
+                written = 0
+                for i in range(1, 23):
+                    ch = f"chr{i}"
+                    candidates = [p for p in [paths_low.get(ch), paths_com.get(ch)] if p and os.path.exists(p)]
+                    pos_vids: List[Tuple[int, str]] = []
+                    for p in candidates:
+                        with open(p, 'r') as f:
+                            for line in f:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                pos_s, vid = line.split('\t', 1)
+                                try:
+                                    pos = int(pos_s)
+                                except Exception:
+                                    continue
+                                pos_vids.append((pos, vid))
+                    if pos_vids:
+                        pos_vids.sort(key=lambda x: x[0])
+                        with open(merged_list, 'a') as fo:
+                            fo.write('\n'.join(v for _, v in pos_vids) + '\n')
+                        written += len(pos_vids)
+                print(f"[subset] 合并后总变体数: {written:,}")
+
+                # 调用 plink2 进行合并集的 subset
+                out_lc = f"{out_prefix}.lowfreq_common"
+                cmd = [
+                    plink2_path,
+                    '--bfile', bed_prefix,
+                    '--extract', merged_list,
+                    '--make-bed',
+                    '--threads', str(int(max(1, threads))),
+                    '--out', out_lc,
+                ]
+                print("[subset] 运行:", ' '.join(cmd))
+                try:
+                    subprocess.run(cmd, check=True)
+                except subprocess.CalledProcessError as e:
+                    raise RuntimeError(f"plink2 子集（lowfreq_common）失败: {e}")
+                outputs['lowfreq_common'] = out_lc
+
+        else:
+            # 分别对子三组进行 subset
+            for g in ('lowfreq','common'):
+                path = selected_paths.get(g)
+                if not path:
+                    print(f"[subset] ⚠️ 未提供 {g} 变体列表，跳过该组。")
+                    continue
+                outg = f"{out_prefix}.{g}"
+                cmd = [
+                    plink2_path,
+                    '--bfile', bed_prefix,
+                    '--extract', os.path.abspath(path),
+                    '--make-bed',
+                    '--threads', str(int(max(1, threads))),
+                    '--out', outg,
+                ]
+                print("[subset] 运行:", ' '.join(cmd))
+                try:
+                    subprocess.run(cmd, check=True)
+                except subprocess.CalledProcessError as e:
+                    raise RuntimeError(f"plink2 子集（{g}）失败: {e}")
+                outputs[g] = outg
+
+        # 无论是否合并，都要处理 rare
+        rare_path = selected_paths.get('rare')
+        if not rare_path:
+            print("[subset] ⚠️ 未提供 rare 变体列表，跳过 rare 子集。")
+        else:
+            out_r = f"{out_prefix}.rare"
+            cmd = [
+                plink2_path,
+                '--bfile', bed_prefix,
+                '--extract', os.path.abspath(rare_path),
+                '--make-bed',
+                '--threads', str(int(max(1, threads))),
+                '--out', out_r,
+            ]
+            print("[subset] 运行:", ' '.join(cmd))
+            try:
+                subprocess.run(cmd, check=True)
+            except subprocess.CalledProcessError as e:
+                raise RuntimeError(f"plink2 子集（rare）失败: {e}")
+            outputs['rare'] = out_r
+
+    finally:
+        # 清理临时目录
+        try:
+            import shutil
+            shutil.rmtree(tmp_root)
+        except Exception:
+            pass
+
+    dt = time.time() - t0
+    print(f"[subset] 完成。耗时 {dt/60:.2f} 分钟；输出前缀：{outputs}")
+    return outputs
 
