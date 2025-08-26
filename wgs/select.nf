@@ -656,7 +656,7 @@ process rmMAF0orVMISS1_repeat {
 
     output:
     file('*.log')
-    tuple file("*.bed"), file("*.bim"), file("*.fam") into rm_maf0_vmiss1_repeat_out
+    tuple file("*.bed"), file("*.bim"), file("*.fam") into rm_maf0_vmiss1_repeat_out, rm_maf0_vmiss1_repeat_out_2
     tuple file('maf0_or_vmiss1_variants.variant_ids.tsv'), file('maf0_or_vmiss1_variants.with_flags.tsv')
 
     script:
@@ -730,6 +730,47 @@ process ToMMoPanelThr {
         --knee_weight_y_map '{"rare": 1.0, "lowfreq": 4.0, "common": 4.0}'
     """
 }
+
+process ToMMoPanelFilter {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '36h'
+    tag "ToMMoPanelFilter"
+
+    publishDir "${params.outdir}/19.tommo_panel_filter", mode: 'symlink'
+
+    input:
+    file(manifest) from tommo_panel_thr_out
+    tuple file(bed), file(bim), file(fam) from rm_maf0_vmiss1_repeat_out_2
+
+    output:
+    file('*.log')
+    file('*.json')
+    file('*.tsv')
+    file('*.bed')
+    file('*.bim')
+    file('*.fam') into final_sample_out
+
+    script:
+    bed_prefix = bed.baseName
+    """
+    source activate cteph_geno_pro
+    python ${params.scriptDir}/panel_filter_main.py \
+        --manifest_path ${manifest} \
+        --config_json   ${params.scriptDir}/panel_select_config.json \
+        --bed_prefix    ${bed_prefix} \
+        --out_prefix    cteph_agp3k \
+        --threads 6 --chunk_size 500000 --max_workers 10 \
+        --keep_tmp \
+        --merge_low_common \
+        --plink2_path /home/b/b37974/plink2 \
+        --save_out_map
+    """
+}
+
+sample_ch = final_sample_out.map { it[0] }
+
+sample_ch.view()
 
 // process sqc_miss_het {
 //     executor 'slurm'
