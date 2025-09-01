@@ -1,3 +1,47 @@
+"""
+模块名称：panel_compare_tools
+=================================
+
+【概述】
+本模块提供了一系列针对 ToMMo 参考数据库进行变异位点交叉比对与统计可视化的工具函数，适用于全基因组测序（WGS）或芯片数据的质控与后续关联分析准备。
+
+【功能组成】
+1. run_plink2_variant_qc_with_tommo
+   - 将 `variant_qc_summary` 与 ToMMo VCF 进行交叉比对，生成附带 ToMMo 信息的扩展表。
+   - 输出包含 IN_TOMMO、TOMMO_AAF、TOMMO_FILTER 三列。
+
+2. plot_tommo_panel_compare_pdf
+   - 基于 `variant_qc_with_tommo.tsv` 绘制对比 PDF（共 5 页）。
+   - 包括统计表、散点图（PASS/Non-PASS 与 SNP/InDel）、直方图等。
+
+3. build_grouped_variant_tables
+   - 按 CTRL_MAF 将变异划分为 Rare / LowFreq / Common 三类，并在各类内细分 a/b/c 三个亚组。
+   - 针对 c_in_pass 组计算 DIFF 与 ROBUST_Z，输出分组化的 TSV.GZ 文件及 manifest.json。
+
+4. summarize_c_in_pass_thresholds
+   - 基于 manifest.json，扫描 c_in_pass 组，计算不同 |ROBUST_Z| 阈值下的 count 与 MSE。
+   - 输出各分组的 summary TSV，并将结果更新写回 manifest.json。
+
+5. plot_c_in_pass_threshold_tradeoff
+   - 读取 summary TSV，在 PDF 中绘制 trade-off 曲线，并通过 KneeLocator 自动识别拐点。
+   - 同时输出拐点阈值下的散点分布图和对应变体列表 TSV，更新至 manifest.json。
+
+6. summarize_variants_filter_from_manifest
+   - 结合 manifest.json 和输入表，生成带有 FILTER_STAT 标签的 summary 表。
+   - 支持最终过滤状态的快速判定（Stat_1 ~ Stat_4），并输出分组统计结果。
+
+【适用场景】
+- 大规模变异数据的 ToMMo 参考面板比对与质量控制；
+- 根据群体频率差异与稳健统计指标（ROBUST_Z）进行多阶段过滤；
+- GWAS、pQTL 等关联研究前的数据预处理。
+
+【实现特点】
+- 全面采用 **分块读取** 与 **并行处理**，支持千万至上亿行规模的数据。
+- 临时文件与中间结果均通过日志记录，便于排错与调试。
+- 输出文件结构清晰：表格（TSV/TSV.GZ）、可视化（PDF）、摘要统计（JSON/TSV）。
+
+作者: ZHAO TIE
+"""
 import subprocess
 import os
 import tempfile
@@ -439,52 +483,48 @@ def plot_tommo_panel_compare_pdf(
     函数名称：plot_tommo_panel_compare_pdf
     =====================================
     【功能】
-    读取 `run_plink2_variant_qc_with_tommo` 生成的结果（*.variant_qc_with_tommo.tsv），
-    并输出一个包含 4 页内容的 PDF。每一页包含 3 个分图（Rare/LowFreq/Common 三组）。
+    - 输入 `run_plink2_variant_qc_with_tommo` 生成的结果表（*.variant_qc_with_tommo.tsv），
+      输出一个包含 **5 页** 的 PDF 文件，每页含 3 个分图（Rare/LowFreq/Common 三组）。
 
-    【输入】
-    - variant_qc_with_tommo: str
-        由 run_plink2_variant_qc_with_tommo 产出的结果表路径。
-    - output_pdf: Optional[str]
-        输出 PDF 文件路径；默认与输入同名但后缀为 `.panel_compare.pdf`。
-    - max_points: Optional[int]
-        为了绘图速度，可对每个分组随机抽样此数量的点（None 表示不抽样）。
-    - png_dpi: int = 600
-        第 2～3 页的每个分图先以高清 PNG（位图）保存，再插入到 PDF 中；此参数用于调节 PNG 的分辨率（DPI）。
-    - page23_figsize: tuple = (14, 5)
-        第 2～3 页组合页面的整体尺寸（英寸），可调大以放大每个分图在 PDF 页内的可视大小。
-    - page4_figsize: tuple = (14, 5)
-        第 4 页（直方图页）的整体画布尺寸（英寸）。建议与第 2～3 页一致以保持版式统一。
-    - page4_wspace: float = 0.10
-        第 4 页三幅直方图之间的水平间距（0~1，越大间距越大）。
-    - snp_color: Optional[str] = None
-        第 3 页中 SNP 点的颜色（默认依据 theme 使用配色，与 PASS/Non-PASS 颜色不同）。
-    - indel_color: Optional[str] = None
-        第 3 页中 InDel 点的颜色（默认依据 theme 使用配色，与 PASS/Non-PASS 颜色不同）。
+    【页面内容】
+    1. **第 1 页**：三组统计表，列出
+        - Total Variants：该分组的变体总数
+        - In ToMMo：在 ToMMo 中存在的变体数
+        - Pass ToMMo：ToMMo FILTER=PASS 的变体数
+        - Percent：相对于组内总数的百分比（1 位小数），Count 使用千分位逗号格式。
+    2. **第 2 页**：三组散点图，X=TOMMO_AAF，Y=CTRL_AAF。颜色区分 ToMMo FILTER 是否 PASS。
+    3. **第 3 页**：三组散点图，X=TOMMO_AAF，Y=CTRL_AAF。颜色区分变异类型（SNP vs InDel），不筛选 PASS。
+    4. **第 4 页**：三组散点图，X=TOMMO_AAF，Y=CTRL_AAF。仅保留 ToMMo FILTER=PASS 的点，颜色区分 SNP vs InDel。
+    5. **第 5 页**：三组直方图，X=CTRL_AAF-TOMMO_AAF 的分布，仅 PASS 变体；标题中显示 $\mu \pm \sigma$。
 
-    【分组定义（基于 CTRL_MAF）】
-    - Rare Variant (<0.01)
-    - Low Frequency Variant (0.01 ~ 0.05)
-    - Common Variant (>0.05)
+    【参数说明】
+    - variant_qc_with_tommo : str
+        输入表路径。
+    - output_pdf : Optional[str]
+        输出 PDF 路径（默认与输入同名，后缀改为 `.panel_compare.pdf`）。
+    - max_points : Optional[int]
+        每组最大采样点数（None 表示不抽样）。
+    - png_dpi : int
+        第 2~4 页散点图先渲染为 PNG 再插入 PDF，此参数为分辨率。
+    - page23_figsize : tuple
+        第 2~3 页整体画布尺寸（英寸）。
+    - page4_figsize : tuple
+        第 4 页整体画布尺寸。
+    - page4_wspace : float
+        第 4 页直方图之间的水平间距。
+    - snp_color / indel_color : Optional[str]
+        第 3~4 页 SNP 与 InDel 的点颜色；默认使用 Okabe–Ito 或 Matplotlib 配色。
 
-    【页面说明】
-    1. 第 1 页：3 个小表（每个分组一个表），列：
-        - Total Variants（该分组内总计：按定义可用的 CTRL_MAF）
-        - In ToMMo（IN_TOMMO 为 True 的个数）
-        - Pass ToMMo（TOMMO_FILTER == 'PASS' 的个数）
-        - Percent（相对于该组 Total 的百分比，保留 1 位小数）
-       注：Count 列使用 3 位逗号分隔格式。
-    2. 第 2 页：3 个散点图（每个分组一个图）。X=TOMMO_AAF，Y=CTRL_AAF。
-        颜色按 TOMMO_FILTER 是否 PASS（PASS / 非 PASS）。
-        **实现细节**：为了避免载入过多 artist 导致 PDF 体积大与渲染缓慢，
-        每个分图先渲染为单独的高清 PNG（由 `png_dpi` 控制），再以位图插入 PDF。
-    3. 第 3 页：与第 2 页相同，但**仅保留 TOMMO_FILTER=='PASS'** 的点（同样以 PNG 先渲染后插入）。
-    4. 第 4 页：3 个直方图（仅 PASS），绘制 CTRL_AAF - TOMMO_AAF 的分布（仍为矢量）。
+    【实现要点】
+    - 自动将必要列转换为数值类型，丢弃 NaN。
+    - 基于 CTRL_MAF 将变体划分为三组：Rare (<0.01)、LowFreq (0.01~0.05)、Common (>0.05)。
+    - 为提升性能，第 2~4 页的散点图均先渲染为 PNG 再插入 PDF，避免 PDF 过大或渲染缓慢。
+    - 直方图保持矢量绘制，便于放大。
 
-    【注意】
-    - 自动将相关列转为数值类型并丢弃无法转换的记录（NaN）。
-    - 频率轴范围设为 [0,1]（直方图除外）。
-    - 支持可选抽样以提升绘图速度。
+    返回
+    ----
+    str
+        输出 PDF 文件路径。
     """
     import os
     import numpy as np
@@ -528,9 +568,9 @@ def plot_tommo_panel_compare_pdf(
     dfs = []
     for chunk in pd.read_csv(variant_qc_with_tommo, sep='\t', usecols=needed_cols,
                              dtype={'VARIANT_ID': 'string',
-                                    'CTRL_MAF': 'float32',
-                                    'CTRL_AAF': 'float32',
-                                    'TOMMO_AAF': 'float32',
+                                    'CTRL_MAF': 'float64',
+                                    'CTRL_AAF': 'float64',
+                                    'TOMMO_AAF': 'float64',
                                     'IN_TOMMO': 'object',
                                     'TOMMO_FILTER': 'string'},
                              chunksize=chunk_size, engine='c'):
@@ -696,7 +736,87 @@ def plot_tommo_panel_compare_pdf(
             titles_page2.append(title)
         _compose_three_pngs_to_pdf_page(png_paths_page2, titles_page2, page_title_suffix='')
 
-        # ===== 页面 3：三组散点（仅 PASS；颜色=变异类型：SNP vs InDel），每个分图先渲染为PNG =====
+        # ===== 页面 3：三组散点（颜色=变异类型：SNP vs InDel；不筛 PASS），每个分图先渲染为PNG =====
+        png_paths_page3_all = []
+        titles_page3_all = []
+
+        # 复用已有的 SNP/InDel 判别函数
+        def _classify_variant_type_from_vid(series_vid):
+            """根据 VARIANT_ID( CHROM:POS:REF:ALT ) 判断变异类型。
+            - 若 REF 和 ALT 均为单碱基且属于 {A,T,C,G} → 'SNP'
+            - 否则 → 'InDel'
+            返回同长度的 Series，值为 'SNP' 或 'InDel'。
+            """
+            atcg = {"A", "T", "C", "G"}
+            def _one(vid):
+                if not isinstance(vid, str):
+                    return 'InDel'
+                parts = vid.split(':', 3)
+                if len(parts) != 4:
+                    return 'InDel'
+                ref, alt = parts[2], parts[3]
+                if ref in atcg and alt in atcg and len(ref) == 1 and len(alt) == 1:
+                    return 'SNP'
+                return 'InDel'
+            return series_vid.apply(_one)
+
+        for (title, g) in groups:
+            cols_needed = ['VARIANT_ID', 'CTRL_AAF', 'TOMMO_AAF']
+            if not all(c in g.columns for c in cols_needed):
+                png_paths_page3_all.append(None)
+                titles_page3_all.append(title + ' (All variants)')
+                continue
+            g2 = g[cols_needed].dropna()
+            if max_points is not None and len(g2) > max_points:
+                g2 = g2.sample(n=max_points, random_state=42)
+            if g2.empty:
+                png_paths_page3_all.append(None)
+                titles_page3_all.append(title + ' (All variants)')
+                continue
+
+            # 变异类型标注
+            g2 = g2.assign(TYPE=_classify_variant_type_from_vid(g2['VARIANT_ID']))
+            is_snp = (g2['TYPE'] == 'SNP')
+            is_indel = (g2['TYPE'] == 'InDel')
+
+            # 绘制（SNP 用 snp_color，InDel 用 indel_color）
+            f_sc, ax_sc = plt.subplots(figsize=(6, 6))  # 方形画布
+            if is_snp.any():
+                ax_sc.scatter(
+                    g2.loc[is_snp, 'TOMMO_AAF'], g2.loc[is_snp, 'CTRL_AAF'],
+                    s=ms_pass, alpha=alpha_pass, linewidths=0,
+                    color=snp_color, label='SNP', zorder=3
+                )
+            if is_indel.any():
+                ax_sc.scatter(
+                    g2.loc[is_indel, 'TOMMO_AAF'], g2.loc[is_indel, 'CTRL_AAF'],
+                    s=ms_nonpass, alpha=alpha_nonpass, linewidths=0,
+                    color=indel_color, label='InDel', zorder=4
+                )
+
+            # 参考线 y=x（置于最上）
+            ax_sc.plot([0, 1], [0, 1], linestyle=refline_ls, linewidth=refline_lw, color=refline_color, zorder=10)
+            ax_sc.minorticks_on()
+            ax_sc.legend(frameon=False, fontsize=9)
+            ax_sc.set_xlabel('TOMMO_AAF')
+            ax_sc.set_ylabel('CTRL_AAF')
+            ax_sc.set_xlim(0, 1)
+            ax_sc.set_ylim(0, 1)
+            ax_sc.set_box_aspect(1)
+            ax_sc.xaxis.set_major_locator(MaxNLocator(nbins=5))
+            ax_sc.yaxis.set_major_locator(MaxNLocator(nbins=5))
+            ax_sc.grid(True, linestyle='--', linewidth=0.5, alpha=0.5)
+            f_sc.subplots_adjust(left=0.18, right=0.98, bottom=0.18, top=0.94)
+
+            out_png = os.path.join(pngdir, f"page3_all_{title.replace(' ', '_').replace('>', 'gt').replace('<', 'lt')}_SNP_InDel.png")
+            f_sc.savefig(out_png, dpi=png_dpi)
+            plt.close(f_sc)
+            png_paths_page3_all.append(out_png)
+            titles_page3_all.append(title + ' (All variants)')
+
+        _compose_three_pngs_to_pdf_page(png_paths_page3_all, titles_page3_all, page_title_suffix='')
+
+        # ===== 页面 4：三组散点（仅 PASS；颜色=变异类型：SNP vs InDel），每个分图先渲染为PNG =====
         png_paths_page3 = []
         titles_page3 = []
 
@@ -779,7 +899,7 @@ def plot_tommo_panel_compare_pdf(
 
         _compose_three_pngs_to_pdf_page(png_paths_page3, titles_page3, page_title_suffix='')
 
-        # ===== 页面 4：三组直方图（仅 PASS，CTRL_AAF - TOMMO_AAF），保留为矢量 =====
+        # ===== 页面 5：三组直方图（仅 PASS，CTRL_AAF - TOMMO_AAF），保留为矢量 =====
         fig, axes = plt.subplots(1, 3, figsize=page4_figsize, gridspec_kw={'wspace': page4_wspace})
         for ax, (title, g) in zip(axes, groups):
             g_pass = g[g['TOMMO_FILTER'] == 'PASS']
@@ -896,8 +1016,8 @@ def build_grouped_variant_tables(
         s = pd.to_numeric(ctrl_maf, errors='coerce')
         labels = pd.Series(pd.NA, index=s.index, dtype='object')
         labels = labels.mask(s < 0.01, 'rare')
-        labels = labels.mask((s >= 0.01) & (s < 0.05), 'lowfreq')
-        labels = labels.mask(s >= 0.05, 'common')
+        labels = labels.mask((s >= 0.01) & (s <= 0.05), 'lowfreq')
+        labels = labels.mask(s > 0.05, 'common')
         return labels
 
     def _assign_subgroup(in_tommo: pd.Series, tommo_filter: pd.Series) -> pd.Series:

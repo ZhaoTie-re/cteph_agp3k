@@ -586,7 +586,7 @@ process RunBBJProjection {
     output:
     file('*.log')
     file('*.pdf')
-    tuple file('*.sscore'), file('*.sscore.vars') into bbj_projection_out
+    tuple file('*.sscore'), file('*.sscore.vars') into bbj_projection_out, bbj_projection_out_2
 
     script:
     my_bed_prefix = my_bed.baseName
@@ -770,7 +770,34 @@ process ToMMoPanelFilter {
 
 sample_ch = final_sample_out.map { it[0] }
 
-sample_ch.view()
+process CovPhenoPrepare {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '36h'
+    tag "CovPhenoPrepare"
+
+    publishDir "${params.outdir}/20.cov_pheno_prepare", mode: 'symlink'
+
+    input:
+    file(sample) from sample_ch
+    val(infoPath) from params.infoPath
+    tuple file(sscore), file(sscore_vars) from bbj_projection_out_2
+
+    output:
+    file('*.missing_age_samples.csv')
+    tuple file('*.pheno_df.csv'), file('*.cov_df.csv'), file('*.cov_df.no_age.csv') into cov_pheno_out
+
+    script:
+    info_df = "${infoPath}/cteph_agp3k_jhrpv4.xlsx"
+    """
+    source activate cteph_geno_pro
+    python ${params.scriptDir}/cov_pheno_prepare_rev1.py \
+        --info_path ${info_df} \
+        --fam_path ${sample} \
+        --bbj_sscore_path ${sscore} \
+        --case_prefix PHOM 
+    """
+}
 
 // process sqc_miss_het {
 //     executor 'slurm'
