@@ -495,7 +495,7 @@ def plot_tommo_panel_compare_pdf(
     2. **第 2 页**：三组散点图，X=TOMMO_AAF，Y=CTRL_AAF。颜色区分 ToMMo FILTER 是否 PASS。
     3. **第 3 页**：三组散点图，X=TOMMO_AAF，Y=CTRL_AAF。颜色区分变异类型（SNP vs InDel），不筛选 PASS。
     4. **第 4 页**：三组散点图，X=TOMMO_AAF，Y=CTRL_AAF。仅保留 ToMMo FILTER=PASS 的点，颜色区分 SNP vs InDel。
-    5. **第 5 页**：三组直方图，X=CTRL_AAF-TOMMO_AAF 的分布，仅 PASS 变体；标题中显示 $\mu \pm \sigma$。
+    5. **第 5 页**：三组直方图，X=CTRL_AAF-TOMMO_AAF 的分布，仅 PASS 变体；标题中显示 $\\mu \\pm \\sigma$。
 
     【参数说明】
     - variant_qc_with_tommo : str
@@ -599,8 +599,8 @@ def plot_tommo_panel_compare_pdf(
 
     # 基于 CTRL_MAF 的三组划分（NaN 将被排除出三组统计）
     rare = df[df['CTRL_MAF'] < 0.01].copy()
-    lowf = df[(df['CTRL_MAF'] >= 0.01) & (df['CTRL_MAF'] < 0.05)].copy()
-    comm = df[df['CTRL_MAF'] >= 0.05].copy()
+    lowf = df[(df['CTRL_MAF'] >= 0.01) & (df['CTRL_MAF'] <= 0.05)].copy()
+    comm = df[df['CTRL_MAF'] > 0.05].copy()
 
     groups = [
         ("Rare Variant (<0.01)", rare),
@@ -1927,7 +1927,7 @@ def summarize_variants_filter_from_manifest(
     读取 `manifest.json`（由 build_grouped_variant_tables/summarize_c_in_pass_thresholds/plot_c_in_pass_threshold_tradeoff 产生）
     中的 `input` 表路径，按用户指定逻辑生成一个 **summary 表**：
       - 列：VARIANT_ID, GROUP, IN_TOMMO, PASS_TOMMO, PASS_GROUP_ROBUST_Z_FILTER, FILTER_STAT
-      - GROUP：基于 CTRL_MAF 分组：rare(<0.01)、lowfreq(0.01~0.05)、common(>=0.05)
+      - GROUP：基于 CTRL_MAF 分组：rare(<0.01)、lowfreq(0.01~0.05)、common(>0.05)
       - IN_TOMMO：来自 input 的 IN_TOMMO
       - PASS_TOMMO：来自 input 的 TOMMO_FILTER（NaN 保持 NaN；'PASS'→True；其它→False）
       - PASS_GROUP_ROBUST_Z_FILTER：仅当 IN_TOMMO 和 PASS_TOMMO 同时为 True 时才评估；
@@ -2028,8 +2028,8 @@ def summarize_variants_filter_from_manifest(
         x = pd.to_numeric(arr, errors='coerce')
         out = pd.Series(pd.NA, index=x.index, dtype='object')
         out = out.mask(x < 0.01, 'rare')
-        out = out.mask((x >= 0.01) & (x < 0.05), 'lowfreq')
-        out = out.mask(x >= 0.05, 'common')
+        out = out.mask((x >= 0.01) & (x <= 0.05), 'lowfreq')
+        out = out.mask(x > 0.05, 'common')
         return out
 
     def _pass_tommo_from_filter(s: pd.Series) -> pd.Series:
