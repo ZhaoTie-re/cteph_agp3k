@@ -4,6 +4,42 @@
 
 本目录包含了 CTEPH-AGP3K 项目的全基因组测序 (WGS) 数据处理管道。该管道使用 Nextflow 进行流程管理，包含从原始 VCF 文件处理到质量控制、PCA 分析、BBJ 投影等完整的基因组数据预处理步骤。
 
+## 目录结构 (Directory Structure)
+
+```
+wgs/
+├── select.nf                    # 主要的 Nextflow 管道脚本
+├── nextflow.config              # Nextflow 配置文件
+├── README.md                    # 本文档
+└── scripts/                     # Python 脚本目录
+    ├── sample_qc_main.py        # 样本质量控制主脚本
+    ├── sample_qc_pipeline.py    # 样本QC流程管理
+    ├── sample_qc_calculator.py  # 样本QC指标计算
+    ├── sample_qc_flags.py       # 样本QC标记生成
+    ├── variant_qc_main.py       # 变异质量控制主脚本
+    ├── variant_qc_calculator.py # 变异QC指标计算
+    ├── variant_qc_flags.py      # 变异QC标记生成
+    ├── variant_qc_rm_maf0_vmiss1.py # MAF/VMISS过滤脚本
+    ├── pca_qc_main.py           # PCA分析主脚本
+    ├── pca_qc_tools.py          # PCA分析工具
+    ├── bbj_prepare_main.py      # BBJ数据准备脚本
+    ├── bbj_pca_main.py          # BBJ PCA分析脚本
+    ├── bbj_projection_main.py   # BBJ投影分析主脚本
+    ├── bbj_projection_tools.py  # BBJ投影分析工具
+    ├── bbj_sample_keep_main.py  # BBJ样本筛选脚本
+    ├── panel_compare_main.py    # ToMMo面板比较主脚本
+    ├── panel_compare_tools.py   # ToMMo面板比较工具
+    ├── panel_thr_main.py        # ToMMo面板阈值处理脚本
+    ├── panel_filter_main.py     # ToMMo面板过滤主脚本
+    ├── cov_pheno_prepare_rev1.py # 协变量和表型数据准备脚本
+    ├── miss_bias_main.py        # 缺失偏倚分析主脚本
+    ├── miss_bias_tools.py       # 缺失偏倚分析工具
+    ├── random_plink_subset.py   # 随机PLINK子集选择工具
+    ├── hwe.json                 # HWE检验配置文件
+    ├── panel_select_config.json # 面板选择配置文件
+    └── test.ipynb               # 测试notebook
+```
+
 ## 主要文件说明 (Main Files)
 
 ### 核心流程文件
@@ -13,6 +49,8 @@
 
 ### 配置文件
 - **`nextflow.config`**: 定义了每个进程的 SLURM 集群资源配置
+- **`scripts/hwe.json`**: Hardy-Weinberg 平衡检验的参数配置
+- **`scripts/panel_select_config.json`**: ToMMo 面板选择的配置参数
 
 ## 流程步骤详解 (Pipeline Steps)
 
@@ -170,40 +208,263 @@
 
 ## 核心 Python 脚本说明 (Core Python Scripts)
 
-### 样本质量控制模块
-- **`sample_qc_main.py`**: 样本 QC 主脚本
-- **`sample_qc_pipeline.py`**: 样本 QC 流程管理
-- **`sample_qc_calculator.py`**: 样本 QC 指标计算
-- **`sample_qc_flags.py`**: 样本 QC 标记生成
+### 1. 样本质量控制模块 (Sample QC Module)
 
-### 变异质量控制模块
-- **`variant_qc_main.py`**: 变异 QC 主脚本
-- **`variant_qc_calculator.py`**: 变异 QC 指标计算
-- **`variant_qc_flags.py`**: 变异 QC 标记生成
-- **`variant_qc_rm_maf0_vmiss1.py`**: MAF/VMISS 过滤脚本
+#### `sample_qc_main.py`
+- **功能**: 样本质量控制的主控脚本
+- **主要任务**:
+  - 协调整个样本QC流程
+  - 调用各种QC计算器和标记生成器
+  - 生成最终的样本QC报告
+- **输入**: PLINK格式文件 (BED/BIM/FAM)
+- **输出**: 样本QC统计结果、可视化图表、通过QC的样本列表
 
-### PCA 分析模块
-- **`pca_qc_main.py`**: PCA 主脚本
-- **`pca_qc_tools.py`**: PCA 分析工具
+#### `sample_qc_pipeline.py`
+- **功能**: 样本QC流程管理器
+- **主要任务**:
+  - 定义QC流程的执行顺序
+  - 管理不同QC步骤之间的数据传递
+  - 处理异常情况和错误恢复
+- **特点**: 模块化设计，便于维护和扩展
 
-### BBJ 投影分析模块
-- **`bbj_prepare_main.py`**: BBJ 数据准备
-- **`bbj_pca_main.py`**: BBJ PCA 分析
-- **`bbj_projection_main.py`**: BBJ 投影分析
-- **`bbj_projection_tools.py`**: BBJ 投影工具
-- **`bbj_sample_keep_main.py`**: BBJ 样本筛选
+#### `sample_qc_calculator.py`
+- **功能**: 样本QC指标计算引擎
+- **计算指标**:
+  - 样本缺失率 (Sample Missing Rate)
+  - 杂合度 (Heterozygosity Rate)
+  - 测序深度分布 (Depth Distribution)
+  - 亲缘关系系数 (PI_HAT)
+  - F系数 (Inbreeding Coefficient)
+- **算法**: 使用稳健统计方法识别异常样本
 
-### ToMMo 面板分析模块
-- **`panel_compare_main.py`**: 面板比较主脚本
-- **`panel_compare_tools.py`**: 面板比较工具
-- **`panel_thr_main.py`**: 面板阈值处理
-- **`panel_filter_main.py`**: 面板过滤主脚本
+#### `sample_qc_flags.py`
+- **功能**: 样本QC标记生成器
+- **标记类型**:
+  - `HIGH_MISSING`: 高缺失率样本
+  - `OUTLIER_HET`: 杂合度异常样本
+  - `RELATED`: 高亲缘关系样本
+  - `LOW_DEPTH`: 低测序深度样本
+- **输出**: 样本标记文件和过滤建议
 
-### 其他工具模块
-- **`cov_pheno_prepare_rev1.py`**: 协变量和表型数据准备
-- **`miss_bias_main.py`**: 缺失偏倚分析主脚本
-- **`miss_bias_tools.py`**: 缺失偏倚分析工具
-- **`random_plink_subset.py`**: 随机 PLINK 子集选择
+### 2. 变异质量控制模块 (Variant QC Module)
+
+#### `variant_qc_main.py`
+- **功能**: 变异质量控制的主控脚本
+- **主要任务**:
+  - 执行变异位点的质量评估
+  - 应用多层次过滤标准
+  - 生成变异QC报告和统计图表
+- **输入**: 经过初步过滤的VCF文件
+- **输出**: 变异QC统计、通过QC的变异列表
+
+#### `variant_qc_calculator.py`
+- **功能**: 变异QC指标计算引擎
+- **计算指标**:
+  - 变异缺失率 (Variant Missing Rate)
+  - Hardy-Weinberg平衡检验 (HWE test)
+  - 等位基因频率 (Allele Frequency)
+  - 变异质量评分 (Variant Quality Scores)
+- **特殊处理**: 按MAF分层进行不同的QC标准
+
+#### `variant_qc_flags.py`
+- **功能**: 变异QC标记生成器
+- **标记类型**:
+  - `HIGH_MISSING`: 高缺失率变异
+  - `HWE_FAIL`: HWE检验失败变异
+  - `LOW_QUAL`: 低质量变异
+  - `MONO`: 单态变异
+- **过滤策略**: 基于变异类型和频率的差异化过滤
+
+#### `variant_qc_rm_maf0_vmiss1.py`
+- **功能**: 专门用于移除MAF=0或VMISS=1的变异
+- **算法**: 高效识别和移除无信息变异位点
+- **优化**: 针对大规模数据集的内存优化算法
+
+### 3. 主成分分析模块 (PCA Analysis Module)
+
+#### `pca_qc_main.py`
+- **功能**: 主成分分析的主控脚本
+- **分析步骤**:
+  - LD修剪 (Linkage Disequilibrium Pruning)
+  - PCA计算 (Principal Component Analysis)
+  - 人群分层检测 (Population Stratification Detection)
+  - 异常样本识别 (Outlier Detection)
+- **输出**: PC坐标、载荷矩阵、可视化图表
+
+#### `pca_qc_tools.py`
+- **功能**: PCA分析工具集
+- **工具函数**:
+  - LD修剪参数优化
+  - PCA结果解释和可视化
+  - 人群分层评估
+  - 异常值检测算法
+- **可视化**: 生成PC1-PC2散点图、scree plot等
+
+### 4. BBJ投影分析模块 (BBJ Projection Module)
+
+#### `bbj_prepare_main.py`
+- **功能**: BBJ数据库投影分析的数据准备
+- **主要任务**:
+  - 提取与BBJ数据库共同的变异位点
+  - 标准化等位基因编码
+  - 处理缺失数据
+- **输出**: 标准化的投影分析输入文件
+
+#### `bbj_pca_main.py`
+- **功能**: BBJ数据库的PCA分析
+- **分析内容**:
+  - 在BBJ参考数据上执行PCA
+  - 生成BBJ人群的主成分空间
+  - 为投影分析准备参考坐标系
+- **参考数据**: 使用BBJ数据库的高质量样本
+
+#### `bbj_projection_main.py`
+- **功能**: BBJ投影分析主脚本
+- **投影算法**:
+  - 将研究样本投影到BBJ主成分空间
+  - 计算投影坐标和置信区间
+  - 识别人群异常样本
+- **质控标准**: 基于BBJ人群分布的异常值检测
+
+#### `bbj_projection_tools.py`
+- **功能**: BBJ投影分析工具集
+- **工具函数**:
+  - 投影坐标计算算法
+  - 人群归属判断
+  - 投影质量评估
+  - 结果可视化工具
+
+#### `bbj_sample_keep_main.py`
+- **功能**: 基于BBJ投影结果的样本筛选
+- **筛选标准**:
+  - 投影距离阈值
+  - 人群归属一致性
+  - 投影质量评分
+- **输出**: 通过BBJ投影QC的样本列表
+
+### 5. ToMMo面板分析模块 (ToMMo Panel Analysis Module)
+
+#### `panel_compare_main.py`
+- **功能**: 与ToMMo 60KJPN面板的比较分析主脚本
+- **比较内容**:
+  - 等位基因频率比较
+  - 变异位点覆盖度分析
+  - 人群特异性变异识别
+- **参考数据**: ToMMo 60KJPN全基因组参考面板
+
+#### `panel_compare_tools.py`
+- **功能**: ToMMo面板比较分析工具集
+- **工具函数**:
+  - 频率相关性计算
+  - 异常频率变异检测
+  - 比较结果可视化
+  - 统计显著性检验
+
+#### `panel_thr_main.py`
+- **功能**: ToMMo面板比较结果的阈值处理
+- **阈值设定**:
+  - 频率差异阈值
+  - 相关系数阈值
+  - 覆盖度阈值
+- **输出**: 阈值筛选结果和建议过滤列表
+
+#### `panel_filter_main.py`
+- **功能**: 基于ToMMo面板比较的最终过滤
+- **过滤策略**:
+  - 多维度综合评估
+  - 保守过滤策略
+  - 敏感性分析
+- **输出**: 最终通过面板QC的变异列表
+
+### 6. 协变量和表型准备模块 (Covariate & Phenotype Module)
+
+#### `cov_pheno_prepare_rev1.py`
+- **功能**: 为下游GWAS分析准备协变量和表型数据
+- **数据整合**:
+  - 样本信息匹配
+  - BBJ投影结果整合
+  - 临床信息处理
+  - 缺失数据处理
+- **输出文件**:
+  - `cteph_agp3k.bbj.projection.cov_df.csv`: 完整协变量矩阵
+  - `cteph_agp3k.bbj.projection.pheno_df.csv`: 表型数据矩阵
+  - `cteph_agp3k.bbj.projection.cov_df.no_age.csv`: 无年龄协变量矩阵
+  - `cteph_agp3k.bbj.projection.missing_age_samples.csv`: 年龄缺失样本列表
+
+### 7. 缺失偏倚分析模块 (Missing Bias Analysis Module)
+
+#### `miss_bias_main.py`
+- **功能**: 缺失偏倚分析的主控脚本
+- **分析内容**:
+  - 系统性缺失模式检测
+  - 病例对照缺失差异分析
+  - 缺失偏倚影响评估
+- **统计方法**: 使用卡方检验和Fisher精确检验
+
+#### `miss_bias_tools.py`
+- **功能**: 缺失偏倚分析工具集
+- **工具函数**:
+  - 缺失模式识别算法
+  - 偏倚统计量计算
+  - 缺失数据可视化
+  - 偏倚校正建议
+
+### 8. 辅助工具模块 (Utility Tools)
+
+#### `random_plink_subset.py`
+- **功能**: 随机选择PLINK数据子集
+- **应用场景**:
+  - 测试数据生成
+  - 计算资源优化
+  - 方法验证
+- **算法**: 保持LD结构的分层随机抽样
+
+### 9. 配置文件说明 (Configuration Files)
+
+#### `hwe.json`
+- **功能**: Hardy-Weinberg平衡检验的参数配置
+- **参数设置**:
+  - 不同MAF层级的HWE阈值
+  - 病例组和对照组的差异化标准
+  - 检验方法选择
+
+#### `panel_select_config.json`
+- **功能**: ToMMo面板选择和比较的配置参数
+- **配置内容**:
+  - 面板数据路径
+  - 比较算法参数
+  - 过滤阈值设定
+
+### 脚本依赖关系 (Script Dependencies)
+
+```
+sample_qc_main.py
+├── sample_qc_pipeline.py
+├── sample_qc_calculator.py
+└── sample_qc_flags.py
+
+variant_qc_main.py
+├── variant_qc_calculator.py
+├── variant_qc_flags.py
+└── variant_qc_rm_maf0_vmiss1.py
+
+pca_qc_main.py
+└── pca_qc_tools.py
+
+bbj_projection_main.py
+├── bbj_prepare_main.py
+├── bbj_pca_main.py
+├── bbj_projection_tools.py
+└── bbj_sample_keep_main.py
+
+panel_compare_main.py
+├── panel_compare_tools.py
+├── panel_thr_main.py
+└── panel_filter_main.py
+
+miss_bias_main.py
+└── miss_bias_tools.py
+```
 
 ## 运行说明 (Execution Instructions)
 
