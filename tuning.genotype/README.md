@@ -422,7 +422,7 @@ counts = {threshold: 0 for threshold in thresholds}  # 高效计数
 
 - **开发者**: ZHAO TIE
 - **项目**: CTEPH-AGP3K
-- **更新**: 此项目为就参数调优项目，不再维护
+- **更新**: 此项目为旧版本参数调优项目，不再维护
 
 ---
 

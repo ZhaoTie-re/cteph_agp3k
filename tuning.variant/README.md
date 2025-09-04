@@ -9,11 +9,11 @@
 ```
 tuning.variant/
 ├── README.md                    # 本说明文档
-├── mq.vq.check.nf              # Nextflow 主流程脚本
+├── mq.vq.check.nf               # Nextflow 主流程脚本
 ├── variant.parameter.ipynb      # Jupyter notebook 分析文件
 ├── merged_output.pdf            # 合并后的结果报告
 ├── tmp/                         # 临时输出文件目录
-│   ├── chr1.mq.vq.check.pdf    # 各染色体的分析结果
+│   ├── chr1.mq.vq.check.pdf     # 各染色体的分析结果
 │   ├── chr2.mq.vq.check.pdf
 │   ├── ...
 │   └── PAR.mq.vq.check.pdf
@@ -239,7 +239,7 @@ process mq_vq_check {
 
 - **开发者**: ZHAO TIE
 - **项目**: CTEPH-AGP3K
-- **更新**: 此项目为就参数调优项目，不再维护
+- **更新**: 此项目为旧版本参数调优项目，不再维护
 
 ---
 
