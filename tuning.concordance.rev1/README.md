@@ -25,30 +25,31 @@
 
 ```
 tuning.concordance.rev1/
-├── README.md                                            # 本说明文档
-├── tuning.concordance.rev1.nf                           # Nextflow 主流程脚本
-├── nextflow.config                                      # 计算资源配置文件
-├── scripts/                                             # 核心分析脚本目录
-│   ├── extract_vcf_format.py                            # VCF FORMAT字段提取
-│   ├── evaluate_genotype_concordance_and_vmiss.rev3.py  # 一致性评估核心算法
-│   ├── genotype_concordance_vmiss.summary.rev1.py       # 结果汇总分析
-│   ├── merge_concordance_results.rev1.py                # 染色体结果合并
-│   └── analysis_vis/                                    # 可视化分析脚本
-│       ├── vis.tuning.gt.auto.chr.ipynb                 # 参数调优可视化
-│       ├── vis.cross.platform.auto.chr.ipynb            # 跨平台比较可视化
-│       ├── vis.auto.chr.ipynb                           # 自动化分析可视化
-│       ├── check.ipynb                                  # 结果验证脚本
-│       ├── merged_summary_15x.csv                       # 15x深度汇总结果
-│       ├── merged_summary_30x.csv                       # 30x深度汇总结果
-│       └── merged_summary_all.csv                       # 全体样本汇总结果
-├── results/                                             # 分析结果目录
-│   ├── 01.prepare_format_matrix/                        # 数据预处理结果
-│   ├── 02.concordance_vmiss_calculator/                 # 一致性计算结果
-│   ├── 03.concordance_vmiss_summary/                    # 染色体级别汇总
-│   ├── 04.merge_concordance_vmiss/                      # 跨染色体合并结果
-│   ├── 05.merge_concordance_vmiss_summary/              # 最终汇总结果
-│   └── tmp/                                             # 临时文件
-└── work/                                                # Nextflow 工作目录
+├── README.md                          # 项目说明文档
+├── tuning.concordance.rev1.nf         # Nextflow 主流程脚本
+├── nextflow.config                    # 计算资源与流程配置
+├── scripts/                           # 核心分析与可视化脚本
+│   ├── extract_vcf_format.py          # VCF FORMAT 字段提取工具
+│   ├── evaluate_genotype_concordance_and_vmiss.rev3.py  # 基因型一致性与缺失率评估
+│   ├── genotype_concordance_vmiss.summary.rev1.py       # 结果汇总与统计分析
+│   ├── merge_concordance_results.rev1.py                # 多染色体结果合并
+│   └── analysis_vis/                # 可视化与结果验证
+│       ├── vis.tuning.gt.auto.chr.ipynb                 # 参数调优可视化分析
+│       ├── vis.cross.platform.auto.chr.ipynb            # 跨平台数据质量比较
+│       ├── vis.auto.chr.ipynb                           # 自动化分析报告生成
+│       ├── check.ipynb                                  # 结果完整性验证
+│       ├── merged_summary_15x.csv                       # 15x测序深度汇总
+│       ├── merged_summary_30x.csv                       # 30x测序深度汇总
+│       └── merged_summary_all.csv                       # 全体样本汇总
+├── results/                           # 分析结果输出
+│   ├── 01.prepare_format_matrix/      # 数据预处理结果
+│   ├── 02.concordance_vmiss_calculator/ # 一致性与缺失率计算结果
+│   ├── 03.concordance_vmiss_summary/  # 染色体级别汇总
+│   ├── 04.merge_concordance_vmiss/    # 跨染色体合并结果
+│   ├── 05.merge_concordance_vmiss_summary/ # 最终参数优化汇总
+│   └── tmp/                           # 临时文件存储
+└── work/                              # Nextflow 工作目录（中间文件）
+```
 ```
 
 ## 核心分析流程 (Core Analysis Workflow)
