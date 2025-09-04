@@ -409,7 +409,7 @@ counts = {threshold: 0 for threshold in thresholds}  # 高效计数
 
 ## 版本信息 (Version Info)
 
-- **创建日期**: 2025年9月
+- **创建日期**: 2025年4月
 - **适用版本**: CTEPH-AGP3K v1.0
 - **依赖版本**:
   - Nextflow: 20.0+

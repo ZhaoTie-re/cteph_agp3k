@@ -231,7 +231,7 @@ process mq_vq_check {
 
 ## 版本信息 (Version Info)
 
-- **创建日期**: 2025年9月
+- **创建日期**: 2025年5月
 - **适用版本**: CTEPH-AGP3K v1.0
 - **兼容性**: Nextflow 20.0+, Python 3.7+
 
