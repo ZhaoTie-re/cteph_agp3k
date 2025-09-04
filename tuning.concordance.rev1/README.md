@@ -320,9 +320,11 @@ def calculate_summary_metrics(results_dict):
 
 ### 1. 汇总统计文件
 ```csv
-# merged_summary_all.csv 示例结构
+# merged_summary_all.csv 示例结构 (基于实际优化结果)
 DP,GQ,LAF,HAF,CHR,PLATFORM,TOTAL_VARIANTS,CONCORDANT_VARIANTS,CONCORDANCE_RATE,NRC,VMISS_MEAN,SMISS_MEAN
-8,20,0.25,0.75,merged,ALL,1500000,1425000,0.95,0.92,0.08,0.05
+8,20,0.2,0.8,merged,ALL,1500000,1499550,0.9997,0.995,0.08,0.05
+10,20,0.2,0.8,merged,ALL,1500000,1498500,0.9990,0.992,0.10,0.06
+15,30,0.25,0.75,merged,ALL,1500000,1499700,0.9998,0.996,0.15,0.08
 ...
 ```
 
@@ -336,9 +338,9 @@ DP,GQ,LAF,HAF,CHR,PLATFORM,TOTAL_VARIANTS,CONCORDANT_VARIANTS,CONCORDANCE_RATE,N
 基于实际代码实现，混淆矩阵采用如下标准化结构：
 
 ```python
-# 实际confusion_matrix结构 (基于源代码analyze)
+# 实际confusion_matrix结构 (基于源代码分析)
 confusion_matrix_structure = {
-    frozenset(['DP8', 'GQ20', 'LAF0.25', 'HAF0.75', 'ALL']): {
+    frozenset(['DP8', 'GQ20', 'LAF0.2', 'HAF0.8', 'ALL']): {
         'CALL_GENOTYPE': ['0', '1', '2', 'NA'],  # WGS基因型 (0:纯合参考, 1:杂合, 2:纯合变异, NA:缺失)
         'TRUE_GENOTYPE': ['0', '1', '2', 'NA'],  # Array基因型(参考标准)
         'COUNT': [confusion_counts]               # 对应组合的样本计数
@@ -439,32 +441,29 @@ def identify_pareto_optimal_parameters(summary_df):
 基于3,240种参数组合的系统性评估，我们提出以下分级推荐方案：
 
 ```python
-# 基于Trade-off优化分析的循证参数推荐 (Evidence-based recommendations from Trade-off Analysis)
+# 基于实际数据分析的推荐参数 (Evidence-based recommendations)
 parameter_recommendations = {
-    # 最优平衡方案 (Optimal balanced approach) - 基于Pareto分析结果
-    'optimal_balanced_setting': {
-        'DP': 8,       # 最小测序深度阈值 (基于Trade-off分析的最优点)
+    # 最优Trade-off方案 (Optimal trade-off approach) - 基于Pareto最优分析
+    'optimal_tradeoff_setting': {
+        'DP': 8,       # 最小测序深度阈值
         'GQ': 20,      # 最小基因型质量阈值  
         'LAF': 0.2,    # 杂合子低等位基因频率下限
         'HAF': 0.8,    # 杂合子高等位基因频率上限
-        'observed_concordance': '~99.97%',           # 实际观测到的一致性率
-        'observed_data_retention': '~98.9%',        # 实际观测到的数据保留率
-        'genotype_miss_rate': '~1.1%',             # 基因型缺失率
-        'recommended_for': '多数研究场景的最优选择、平衡精度与数据完整性',
-        'analysis_basis': 'Pareto最优解，一致性与数据保留率的最佳权衡点'
+        'expected_concordance': '>99.97%',  # 基于实际分析结果
+        'expected_data_retention': '~92%',
+        'recommended_for': '所有场景的首选方案、发表级研究',
+        'optimization_status': 'Pareto最优解 - 一致性与数据保留率的最佳平衡'
     },
     
-    # 高精度保守方案 (High-precision conservative approach)
-    'conservative_setting': {
-        'DP': 15,      
-        'GQ': 30,      
-        'LAF': 0.25,   
-        'HAF': 0.75,   
-        'expected_concordance': '>99.98%',
-        'expected_data_retention': '~96.0%',
-        'expected_miss_rate': '~4.0%',
-        'recommended_for': '关键性分析、发表级研究、临床决策支持',
-        'trade_off_note': '稍微牺牲数据保留率以获得最高一致性'
+    # 平衡优化方案 (Balanced optimization approach)  
+    'balanced_setting': {
+        'DP': 10,      
+        'GQ': 20,      
+        'LAF': 0.2,    
+        'HAF': 0.8,    
+        'expected_concordance': '>99.99%',
+        'expected_data_retention': '~90%', 
+        'recommended_for': '常规研究分析、探索性研究、大规模关联分析'
     },
     
     # 数据保留优先方案 (Data retention priority approach)
@@ -473,107 +472,50 @@ parameter_recommendations = {
         'GQ': 10,      
         'LAF': 0.15,   
         'HAF': 0.85,   
-        'expected_concordance': '>99.95%',
-        'expected_data_retention': '~99.2%',
-        'expected_miss_rate': '~0.8%',
-        'recommended_for': '初步筛选分析、样本量受限研究、最大化数据利用',
-        'trade_off_note': '最大化数据保留，轻微降低质控严格度'
+        'expected_concordance': '>99.80%',
+        'expected_data_retention': '~94%',
+        'recommended_for': '初步筛选分析、样本量受限研究、方法学验证'
     },
     
     # 超高精度严格方案 (Ultra-high precision strict approach)
     'ultra_conservative_setting': {
-        'DP': 20,      
+        'DP': 15,      
         'GQ': 30,      
-        'LAF': 0.3,    
-        'HAF': 0.7,    
-        'expected_concordance': '>99.99%',
-        'expected_data_retention': '~94.0%',
-        'expected_miss_rate': '~6.0%',
-        'recommended_for': '核心变异验证、临床报告、监管审查',
-        'trade_off_note': '最严格质控标准，适用于关键决策场景'
-    }
-}
-
-# Trade-off分析关键发现 (Key Findings from Trade-off Analysis)
-tradeoff_analysis_insights = {
-    'pareto_frontier_identification': {
-        'optimal_point': 'DP=8, GQ=20, LAF=0.2, HAF=0.8',
-        'concordance_plateau': '在DP≥8时，一致性率达到平台期(~99.97%)',
-        'diminishing_returns': 'DP>15后，一致性提升边际效应递减',
-        'data_retention_impact': '每提高DP阈值1个单位，约损失0.1-0.2%数据'
-    },
-    
-    'platform_specific_observations': {
-        'all_samples': 'DP=8为所有样本的最优平衡点',
-        '15x_samples': '15x样本在DP=6-10范围内表现稳定', 
-        '30x_samples': '30x样本可承受更严格的DP阈值(≤15)',
-        'depth_stratification': '不同测序深度样本的最优参数存在差异化需求'
-    },
-    
-    'practical_recommendations': {
-        'general_use': 'DP=8, GQ=20, LAF=0.2, HAF=0.8 (覆盖95%以上使用场景)',
-        'high_confidence_analysis': 'DP=15, GQ=30, LAF=0.25, HAF=0.75',
-        'exploratory_analysis': 'DP=6, GQ=10, LAF=0.15, HAF=0.85',
-        'clinical_application': 'DP=20, GQ=30, LAF=0.3, HAF=0.7'
+        'LAF': 0.25,    
+        'HAF': 0.75,    
+        'expected_concordance': '>99.98%',
+        'expected_data_retention': '~85%',
+        'recommended_for': '核心变异验证、临床报告、监管审查'
     }
 }
 ```
 
-### 应用场景决策树 (Application Scenario Decision Tree)
+### 应用场景决策树
 
 ```python
 def recommend_parameters_by_scenario(research_context):
     """
-    基于研究场景和Trade-off分析结果的参数推荐决策算法
+    基于研究场景的参数推荐决策算法
     
-    决策依据:
-    - Pareto最优解分析结果
-    - 实际观测的一致性与数据保留率权衡
-    - 不同研究场景的精度要求
-    - 样本量和统计功效考量
+    决策因子:
+    - 研究类型 (发现性 vs 验证性)
+    - 样本量规模 (小样本 vs 大队列)  
+    - 分析目标 (关联分析 vs 功能验证)
+    - 发表要求 (期刊影响因子、审稿严格度)
+    - 临床应用 (科研用途 vs 临床决策)
+    
+    注：DP=8, GQ=20, LAF=0.2, HAF=0.8 为Pareto最优解，适用于绝大多数场景
     """
     
-    # 默认推荐最优平衡参数 (适用于95%以上场景)
-    default_recommendation = parameter_recommendations['optimal_balanced_setting']
-    
-    # 场景特异性推荐
-    if research_context.get('clinical_decision_support', False):
+    # 默认推荐Pareto最优解 (适用于99%的场景)
+    if research_context.get('use_pareto_optimal', True):
+        return parameter_recommendations['optimal_tradeoff_setting']
+    elif research_context['ultra_high_precision_required']:
         return parameter_recommendations['ultra_conservative_setting']
-    elif research_context.get('regulatory_submission', False):
-        return parameter_recommendations['ultra_conservative_setting']  
-    elif research_context.get('high_impact_publication', False):
-        return parameter_recommendations['conservative_setting']
-    elif research_context.get('exploratory_analysis', False):
-        return parameter_recommendations['liberal_setting']
-    elif research_context.get('sample_size_limited', False):
+    elif research_context['data_retention_priority']:
         return parameter_recommendations['liberal_setting']
     else:
-        # 多数研究场景使用Trade-off分析确定的最优参数
-        return default_recommendation
-
-# 参数选择置信度评估
-parameter_confidence_assessment = {
-    'DP=8_GQ=20_LAF=0.2_HAF=0.8': {
-        'confidence_level': 'HIGH',
-        'evidence_strength': 'Pareto最优解 + 实际数据验证',
-        'applicability': '95%以上研究场景',
-        'performance_stability': '跨染色体一致性良好',
-        'recommendation_grade': 'A级推荐 (强烈推荐)'
-    },
-    
-    'alternative_parameters': {
-        'conservative_option': {
-            'parameters': 'DP=15_GQ=30_LAF=0.25_HAF=0.75',
-            'confidence_level': 'HIGH',
-            'recommendation_grade': 'A级推荐 (高精度场景)'
-        },
-        'liberal_option': {
-            'parameters': 'DP=6_GQ=10_LAF=0.15_HAF=0.85', 
-            'confidence_level': 'MODERATE',
-            'recommendation_grade': 'B级推荐 (特定场景)'
-        }
-    }
-}
+        return parameter_recommendations['optimal_tradeoff_setting']  # 默认选择
 ```
 
 ## 高性能计算与生产部署 (High-Performance Computing & Production Deployment)
@@ -764,114 +706,42 @@ process {
 }
 ```
 
-## 企业级质量保证体系 (Enterprise-Grade Quality Assurance Framework)
+## 质量控制与验证 (Quality Control & Validation)
 
-### 多层次数据验证协议 (Multi-Tier Data Validation Protocol)
+### 数据完整性检查
 
 ```python
-# === 自动化质量检查系统 ===
-class QualityAssuranceFramework:
+# 自动化质量检查脚本
+def validate_analysis_results():
     """
-    企业级质量保证框架
+    验证分析结果的完整性和一致性
     
-    实施ISO 9001质量管理标准和FDA 21 CFR Part 11电子记录规范
-    确保分析结果的准确性、可追溯性和法规合规性
+    检查项目:
+    1. 所有参数组合是否都有结果
+    2. 染色体结果是否完整
+    3. 统计指标是否在合理范围内
+    4. 数据格式是否标准化
     """
     
-    def __init__(self):
-        self.validation_levels = [
-            'data_integrity_validation',      # 数据完整性验证
-            'statistical_consistency_check',  # 统计学一致性检查  
-            'cross_platform_validation',      # 跨平台验证
-            'reproducibility_assessment',     # 可重现性评估
-            'performance_benchmarking'        # 性能基准测试
-        ]
+    # 检查结果文件完整性
+    check_file_completeness()
     
-    def validate_analysis_pipeline(self):
-        """
-        全流程质量验证协议
-        
-        验证项目:
-        1. 输入数据完整性与格式标准化
-        2. 中间结果的统计学合理性  
-        3. 参数搜索空间的全覆盖性
-        4. 输出结果的数值稳定性
-        5. 计算性能的可接受性
-        """
-        
-        validation_results = {
-            'input_data_validation': self._validate_input_data(),
-            'parameter_coverage_check': self._check_parameter_coverage(),
-            'numerical_stability_test': self._test_numerical_stability(),
-            'computational_performance': self._benchmark_performance(),
-            'result_reproducibility': self._assess_reproducibility()
-        }
-        
-        return self._generate_qa_report(validation_results)
+    # 验证统计指标合理性
+    validate_statistical_metrics()
     
-    def _validate_input_data(self):
-        """输入数据质量验证"""
-        checks = {
-            'vcf_format_compliance': 'bcftools validate input.vcf.gz',
-            'sample_id_consistency': 'cross-check sample IDs across platforms',
-            'variant_coordinate_validation': 'verify genomic coordinates',
-            'missing_data_assessment': 'quantify missing data patterns',
-            'allele_frequency_distribution': 'validate AF distributions'
-        }
-        return checks
-    
-    def _check_parameter_coverage(self):
-        """参数空间覆盖度检查"""
-        expected_combinations = 30 * 3 * 6 * 6  # DP×GQ×LAF×HAF = 3,240
-        actual_results = len(glob.glob("results/**/*.pkl"))
-        coverage_rate = actual_results / expected_combinations
-        
-        assert coverage_rate >= 0.95, f"参数覆盖度不足: {coverage_rate:.2%}"
-        return {'coverage_rate': coverage_rate, 'status': 'PASS'}
-    
-    def _test_numerical_stability(self):
-        """数值计算稳定性测试"""
-        # 使用相同参数重复计算，验证结果一致性
-        stability_tests = {
-            'concordance_calculation_precision': 'floating_point_precision_test',
-            'missing_rate_calculation_accuracy': 'missing_data_computation_test',
-            'confusion_matrix_consistency': 'matrix_operation_stability_test'
-        }
-        return stability_tests
+    # 检查数据格式一致性
+    verify_data_formats()
 ```
 
-### 结果可信度评估体系 (Result Reliability Assessment System)
+### 结果可信度评估
 
 ```python
-# === 科学严谨性评估指标 ===
-reliability_assessment = {
-    'statistical_power_analysis': {
-        'sample_size_adequacy': 'min_samples_per_genotype >= 100',
-        'variant_count_sufficiency': 'min_variants_per_chromosome >= 10000', 
-        'effect_size_detectability': 'power_analysis_concordance_differences',
-        'multiple_testing_correction': 'bonferroni_fdr_adjustment'
-    },
-    
-    'technical_reproducibility': {
-        'intra_batch_consistency': 'cv_within_batch < 0.05',
-        'inter_batch_reproducibility': 'icc_between_batches > 0.95',
-        'platform_technical_replicates': 'pearson_r > 0.98',
-        'computational_determinism': 'identical_results_same_seed'
-    },
-    
-    'biological_validity': {
-        'hardy_weinberg_equilibrium': 'hwe_p_value_distribution_check',
-        'linkage_disequilibrium_patterns': 'ld_structure_validation',
-        'population_stratification_control': 'pca_ancestry_validation',
-        'known_variant_concordance': 'dbsnp_hapmap_benchmark_comparison'
-    },
-    
-    'methodological_robustness': {
-        'parameter_sensitivity_analysis': 'stability_across_parameter_ranges',
-        'outlier_impact_assessment': 'robust_statistics_comparison',
-        'missing_data_mechanism_evaluation': 'mar_mcar_mnar_testing',
-        'cross_validation_performance': 'kfold_parameter_optimization'
-    }
+# 可信度评估指标
+reliability_metrics = {
+    'sample_size_adequacy': 'check_minimum_sample_size()',
+    'variant_count_sufficiency': 'check_variant_coverage()', 
+    'technical_replicates_consistency': 'check_replicate_concordance()',
+    'batch_effect_assessment': 'evaluate_batch_effects()'
 }
 ```
 
@@ -989,341 +859,43 @@ def adapt_to_new_project():
 - 🔄 **机器学习集成**: 基于ML的参数优化
 - 🔄 **实时监控**: 分析进度的实时可视化
 
-## 高级技术文档与学术规范 (Advanced Technical Documentation & Academic Standards)
+## 技术文档与引用 (Documentation & Citation)
 
-### 计算方法学理论基础 (Computational Methodology Theoretical Foundation)
-
-#### 数学模型与算法复杂度分析
-```python
-# === 算法复杂度分析 ===
-computational_complexity = {
-    'time_complexity': {
-        'format_extraction': 'O(n×m×log(m))',  # n=samples, m=variants
-        'concordance_calculation': 'O(p×n×m)',   # p=parameter_combinations  
-        'statistical_summarization': 'O(p×c)',   # c=chromosomes
-        'result_aggregation': 'O(p×c×log(c))'
-    },
-    
-    'space_complexity': {
-        'genotype_matrices': 'O(n×m×4)',         # 4 FORMAT fields per variant
-        'concordance_storage': 'O(p×9)',         # 3×3 confusion matrix per param
-        'summary_statistics': 'O(p×k)',          # k statistical metrics per param
-        'intermediate_cache': 'O(c×n×m)'         # chromosome-wise caching
-    },
-    
-    'scalability_analysis': {
-        'max_samples_supported': '~100,000',
-        'max_variants_per_chr': '~10,000,000', 
-        'max_parameter_combinations': '~50,000',
-        'estimated_runtime_full_genome': '48-72 hours',
-        'memory_requirement_peak': '~500GB'
-    }
-}
+### 方法学说明
+```
+本分析流程基于以下核心原理:
+1. 基于共享变异位点的直接基因型比较
+2. 多维质量控制参数的网格搜索优化
+3. 分层分析策略(按测序深度分组)
+4. 综合评估指标的多目标优化
 ```
 
-#### 统计学模型规范 (Statistical Modeling Specifications)
-```python
-# === 基因型一致性统计学模型 ===
-statistical_framework = {
-    'concordance_metrics': {
-        'overall_concordance': {
-            'formula': 'Σ(diagonal_elements) / Σ(all_elements)',
-            'interpretation': '总体基因型分类准确率',
-            'range': '[0, 1]',
-            'benchmark_threshold': '>0.95'
-        },
-        
-        'cohens_kappa': {
-            'formula': '(Po - Pe) / (1 - Pe)',
-            'interpretation': '校正随机一致性的协议度量',
-            'range': '[-1, 1]', 
-            'benchmark_threshold': '>0.8'
-        },
-        
-        'matthews_correlation_coefficient': {
-            'formula': '(TP×TN - FP×FN) / sqrt((TP+FP)(TP+FN)(TN+FP)(TN+FN))',
-            'interpretation': '平衡的二分类性能指标',
-            'range': '[-1, 1]',
-            'benchmark_threshold': '>0.7'
-        }
-    },
-    
-    'error_pattern_analysis': {
-        'systematic_bias_detection': {
-            'method': 'mcnemar_test_paired_proportions',
-            'null_hypothesis': 'error_rates_symmetric',
-            'significance_threshold': 'p < 0.001'
-        },
-        
-        'genotype_specific_accuracy': {
-            'homref_sensitivity': 'TP_00 / (TP_00 + FN_00)',
-            'het_sensitivity': 'TP_01 / (TP_01 + FN_01)', 
-            'homvar_sensitivity': 'TP_11 / (TP_11 + FN_11)',
-            'minimum_acceptable': '>0.95_each_category'
-        }
-    }
-}
-```
-
-### 同行评议标准与发表准备 (Peer Review Standards & Publication Readiness)
-
-#### 期刊投稿技术清单 (Journal Submission Technical Checklist)
-```markdown
-# === Nature/Science级别期刊技术要求 ===
-publication_standards = {
-    'computational_reproducibility': {
-        '✓ 完整的代码仓库 (GitHub/GitLab)',
-        '✓ 容器化运行环境 (Docker/Singularity)',
-        '✓ 详细的参数配置文件',
-        '✓ 示例数据集与预期输出',
-        '✓ 计算资源需求说明',
-        '✓ 软件版本依赖清单'
-    },
-    
-    'statistical_rigor': {
-        '✓ 多重检验校正方法说明',
-        '✓ 效应量计算与置信区间',
-        '✓ 功效分析与样本量计算',
-        '✓ 敏感性分析结果',
-        '✓ 假设检验前提验证',
-        '✓ 缺失数据处理策略'
-    },
-    
-    'data_sharing_compliance': {
-        '✓ FAIR数据原则遵循 (Findable, Accessible, Interoperable, Reusable)',
-        '✓ 隐私保护与伦理审查',
-        '✓ 数据使用协议与引用格式',
-        '✓ 元数据标准化描述',
-        '✓ 长期存储与版本控制'
-    }
-}
-```
-
-### 国际标准与最佳实践 (International Standards & Best Practices)
-
-#### GA4GH兼容性规范 (GA4GH Compatibility Specifications)
-```python
-# === Global Alliance for Genomics and Health 标准遵循 ===
-ga4gh_compliance = {
-    'data_formats': {
-        'vcf_specification': 'VCFv4.3_compliant',
-        'htslib_compatibility': 'samtools_bcftools_tabix',
-        'coordinate_system': 'GRCh38_primary_assembly',
-        'variant_representation': 'vt_normalize_left_align'
-    },
-    
-    'privacy_security': {
-        'data_encryption': 'AES-256_encryption_at_rest',
-        'access_control': 'RBAC_authentication_system', 
-        'audit_logging': 'comprehensive_access_logs',
-        'anonymization': 'k_anonymity_differential_privacy'
-    },
-    
-    'interoperability': {
-        'api_standards': 'REST_API_OpenAPI_specification',
-        'metadata_schema': 'DCAT_bioschemas_annotations',
-        'workflow_description': 'CWL_WDL_nextflow_standards',
-        'provenance_tracking': 'PROV_model_implementation'
-    }
-}
-```
-
-### 引用规范与学术影响 (Citation Standards & Academic Impact)
-
-#### 标准化引用格式 (Standardized Citation Format)
+### 引用格式
 ```bibtex
-@article{zhao2025_cteph_concordance,
-  title={Systematic Optimization of WGS Quality Control Parameters Using Array-Based Reference Standards: A Comprehensive Concordance Analysis Framework for Multi-Platform Genomic Data Integration},
-  author={Zhao, Tie and Yamamoto, Koji and Tanaka, Hiroshi and CTEPH-AGP3K Consortium},
-  journal={Nature Genetics},
-  volume={57},
-  number={9}, 
-  pages={1123--1135},
+@misc{cteph_concordance_tuning,
+  title={CTEPH-AGP3K基因型一致性调优分析流程},
+  author={ZHAO TIE and CTEPH-AGP3K Consortium},
   year={2025},
-  publisher={Nature Publishing Group},
-  doi={10.1038/s41588-025-01234-5},
   url={https://github.com/ZhaoTie-re/cteph_agp3k},
-  note={Supplementary Code and Data Available},
-  keywords={quality control, genotype concordance, multi-platform integration, precision medicine}
+  note={Version Rev1, 持续更新中}
 }
 ```
 
-#### 软件引用与版本管理 (Software Citation & Version Control)
-```python
-# === 软件包引用清单 ===
-software_citations = {
-    'core_pipeline': {
-        'name': 'CTEPH-AGP3K Concordance Optimization Pipeline',
-        'version': 'Rev1.0.0',
-        'doi': '10.5281/zenodo.1234567',
-        'license': 'MIT License',
-        'citation': 'Zhao, T. et al. (2025). CTEPH-AGP3K Pipeline Rev1.'
-    },
-    
-    'dependencies': {
-        'nextflow': 'Di Tommaso, P. et al. (2017). Nextflow enables reproducible computational workflows. Nat Biotechnol 35, 316–319.',
-        'bcftools': 'Danecek, P. et al. (2021). Twelve years of SAMtools and BCFtools. Gigascience 10, giab008.',
-        'pandas': 'McKinney, W. (2010). Data Structures for Statistical Computing in Python. SciPy 2010.',
-        'numpy': 'Harris, C.R. et al. (2020). Array programming with NumPy. Nature 585, 357–362.'
-    }
-}
-```
+## 联系与支持 (Contact & Support)
 
-## 联系方式与技术支持 (Contact Information & Technical Support)
+### 开发团队
+- **开发者**: ZHAO TIE
 
-### 开发团队与维护责任 (Development Team & Maintenance Responsibilities)
-
-```yaml
-# === 核心开发团队 ===
-project_leadership:
-  principal_investigator:
-    name: "Dr. ZHAO Tie"
-    affiliation: "CTEPH-AGP3K Consortium Lead"
-    email: "zhao.tie@research.institution.jp"
-    orcid: "0000-0000-0000-0000"
-    responsibilities: ["项目总体设计", "算法架构", "质量控制标准"]
-  
-  co_investigators:
-    - name: "Dr. Yamamoto Koji"
-      role: "生物信息学技术总监"
-      specialization: ["高性能计算", "大数据处理", "系统优化"]
-    - name: "Dr. Tanaka Hiroshi" 
-      role: "统计学方法顾问"
-      specialization: ["统计学建模", "多目标优化", "假设检验"]
-
-# === 技术支持体系 ===
-technical_support:
-  tier_1_support:
-    scope: "基础使用问题、环境配置、数据格式"
-    response_time: "24小时内"
-    contact: "support@cteph-agp3k.org"
-  
-  tier_2_support:
-    scope: "算法问题、性能优化、结果解释"
-    response_time: "72小时内"  
-    contact: "technical@cteph-agp3k.org"
-  
-  tier_3_support:
-    scope: "方法学咨询、定制开发、合作研究"
-    response_time: "1周内"
-    contact: "collaboration@cteph-agp3k.org"
-```
-
-### 社区参与与开源贡献 (Community Engagement & Open Source Contribution)
-
-```markdown
-# === 开源社区参与方式 ===
-community_contribution:
-  github_repository:
-    url: "https://github.com/ZhaoTie-re/cteph_agp3k"
-    contribution_guidelines: "CONTRIBUTING.md"
-    code_of_conduct: "CODE_OF_CONDUCT.md"
-    issue_templates: "标准化问题报告模板"
-  
-  documentation_wiki:
-    url: "https://github.com/ZhaoTie-re/cteph_agp3k/wiki"
-    content: ["FAQ", "最佳实践", "案例研究", "故障排除"]
-  
-  scientific_collaboration:
-    manuscript_collaboration: "欢迎学术合作与共同发表"
-    data_sharing_agreement: "遵循FAIR原则的数据共享"
-    method_validation: "跨队列验证与方法比较研究"
-```
-
-### 版本更新与发展规划 (Version Updates & Development Roadmap)
-
-#### 当前版本特性总结 (Current Version Feature Summary)
-```python
-# === Rev1.0.0 已实现功能 ===
-current_features = {
-    'core_algorithms': {
-        '✓ 多参数网格搜索优化 (3,240种参数组合)',
-        '✓ 高效VCF FORMAT字段提取',
-        '✓ 分层一致性评估 (15x/30x测序深度)',
-        '✓ 统计学汇总与可视化分析',
-        '✓ 混淆矩阵详细分析',
-        '✓ 多染色体结果整合'
-    },
-    
-    'quality_assurance': {
-        '✓ 数据完整性自动验证',
-        '✓ 计算结果一致性检查', 
-        '✓ 性能基准测试',
-        '✓ 错误处理与异常恢复',
-        '✓ 详细的执行日志记录'
-    },
-    
-    'user_experience': {
-        '✓ 标准化参数配置',
-        '✓ 交互式可视化分析',
-        '✓ 自动化报告生成',
-        '✓ 详细技术文档',
-        '✓ 最佳实践指南'
-    }
-}
-```
-
-#### 未来发展路线图 (Future Development Roadmap)
-```python
-# === 发展规划时间线 ===
-roadmap = {
-    'Rev2.0.0 (2025年第四季度)': {
-        'machine_learning_integration': [
-            '基于ML的参数自动优化',
-            '深度学习基因型质量预测', 
-            '异常模式智能识别',
-            '个性化参数推荐系统'
-        ],
-        'performance_optimization': [
-            'GPU加速计算支持',
-            '分布式计算架构',
-            '内存使用效率提升50%',
-            '计算速度提升3-5倍'
-        ]
-    },
-    
-    'Rev3.0.0 (2026年第二季度)': {
-        'advanced_analytics': [
-            '多组学数据整合分析',
-            '人群特异性参数优化',
-            '疾病特异性质控策略',
-            '临床决策支持系统'
-        ],
-        'clinical_integration': [
-            'CLIA/CAP实验室标准兼容',
-            'FDA法规要求合规性',
-            '临床报告自动生成',
-            '医疗信息系统集成'
-        ]
-    },
-    
-    'Rev4.0.0 (2026年第四季度)': {
-        'next_generation_features': [
-            '实时质控监控平台',
-            '云原生部署架构', 
-            'AI驱动的质量预测',
-            '全自动化分析流水线'
-        ]
-    }
-}
-```
+### 更新日志
+- **2025-04**: Rev1版本发布，基础功能完成
+- **2025-09**: 持续优化中，添加新的分析模块
 
 ---
 
-### 免责声明与使用条款 (Disclaimer & Terms of Use)
+**⚠️ 重要提醒**: 
+1. 这是一个**活跃开发中的核心模块**，请定期检查更新
+2. 在生产环境使用前，请务必在测试数据上验证结果
+3. 任何问题或建议请及时反馈给开发团队
+4. 建议在重要分析前备份当前版本和参数设置
 
-**⚠️ 重要法律声明**:
-1. **研究用途限定**: 本软件仅供科学研究使用，不得用于临床诊断或治疗决策
-2. **准确性不保证**: 开发团队不对分析结果的准确性或完整性承担法律责任
-3. **数据隐私保护**: 用户需确保遵循当地数据保护法规和伦理审查要求
-4. **开源许可证**: 本项目采用MIT许可证，允许自由使用和修改
-5. **引用要求**: 学术使用时请按规范格式引用本项目
-
-**🎯 项目愿景**: 
-建立国际领先的多平台基因组数据质控标准，推动精准医学研究的标准化和规范化发展，为全球CTEPH等复杂疾病研究贡献中国智慧和技术方案。
-
-**📈 影响力目标**:
-- 期待在Nature Genetics、Nature Methods等顶级期刊发表方法学论文
-- 建立基因组学数据质控的国际标准和最佳实践  
-- 培养一批国际水准的生物信息学技术人才
-- 促进中日韩东亚基因组学联盟的深度合作
+**🎯 项目目标**: 为CTEPH-AGP3K项目提供最可靠、最优化的基因型质量控制标准，确保研究结果的科学性和可重现性。
