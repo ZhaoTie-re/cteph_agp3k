@@ -1,4 +1,4 @@
-# CTEPH-AGP3K WGS Data Processing Pipeline
+# CTEPH-AGP3K WGS 数据处理管道
 
 ## 概述 (Overview)
 
@@ -130,11 +130,30 @@ wgs/
   - 亲缘关系检测 (PI_HAT)
 - **输出**: 样本 QC 统计结果和可视化图表
 
-#### 12. rmMAF0orVMISS1 (`12.rm_maf0_vmiss1/`)
-- **功能**: 移除 MAF=0 或 VMISS=1 的变异位点
-- **输入**: PLINK 格式文件
-- **输出**: 过滤后的 PLINK 文件
-- **工具**: plink2
+**样本质控方法详解：**
+
+1. **样本缺失率 (SMISS)**  
+   统计每个样本的基因型缺失比例，绘制分布图。
+
+2. **杂合度检测 (Heterozygosity F)**  
+   计算每个样本的杂合性 F 值，结合均值±5SD进行异常检测。
+
+3. **测序深度分布 (Mean DP)**  
+   统计每个样本的平均测序深度，使用稳健Z分数识别低深度样本。
+
+4. **亲缘关系检测 (PI_HAT)**  
+   - 计算所有样本两两之间的 PI_HAT 值，筛选高亲缘关系对（PI_HAT > 0.2）。
+   - 绘制 PI_HAT 分布直方图，区分 case-case、control-control、case-control。
+   - 构建亲缘网络图，采用最小加权顶点覆盖算法（MWVC）自动识别需删除的样本节点，优先保留病例（case），并结合缺失率权重。
+   - 删除样本流程：  
+     1. 对所有高 PI_HAT 的样本对，构建网络；
+     2. 节点权重 = case样本权重高，且缺失率低者优先保留；
+     3. MWVC算法自动选择需删除的样本，生成删除名单；
+     4. 在最终 QC 标记文件中，PASS_PI_HAT 为 False 的样本即为被删除对象。
+
+5. **综合 QC 标记输出**  
+   - 生成 `sample_qc_flags.csv`，包含每个样本的各项 QC 标记（PASS_SMISS, PASS_MEAN_DP, PASS_HET_F, PASS_PI_HAT）。
+   - 可视化 QC 关系图表。
 
 ### 阶段 6: 变异质量控制 (Variant QC)
 
@@ -146,6 +165,22 @@ wgs/
   - Hardy-Weinberg 平衡检验 (HWE)
   - MAF 分层分析
 - **输出**: 变异 QC 统计结果和通过的变异列表
+
+**变异质控方法详解：**
+
+1. **变异缺失率 (VMISS)**  
+   统计每个位点的缺失率，绘制分布图。
+
+2. **MAF分层分析**  
+   按 MAF 分层，分别统计各层的 QC 指标。
+
+3. **Hardy-Weinberg 平衡检验 (HWE)**  
+   - 对病例组和对照组分别进行 HWE 检验，采用不同阈值（常见变异、低频变异、稀有变异）。
+   - 输出 HWE 检验结果和可视化图表。
+
+4. **最终变异筛选**  
+   - 结合缺失率、HWE、MAF等多项指标，生成通过 QC 的变异列表。
+   - 输出 QC 标记文件和筛选建议。
 
 ### 阶段 7: 主成分分析 (PCA Analysis)
 
@@ -163,11 +198,6 @@ wgs/
 - **输入**: BBJ 投影结果
 - **输出**: 筛选后的样本列表
 
-#### 16. rmMAF0orVMISS1_repeat (`16.rm_maf0_vmiss1_repeat/`)
-- **功能**: 重复执行 MAF/VMISS 过滤 (基于更新的样本集)
-- **输入**: 更新样本集的 PLINK 文件
-- **输出**: 再次过滤的 PLINK 文件
-
 ### 阶段 9: ToMMo 面板比较分析 (ToMMo Panel Analysis)
 
 #### 17. ToMMoPanelCompare (`17.tommo_panel_compare/`)
@@ -175,18 +205,6 @@ wgs/
 - **脚本**: `scripts/panel_compare_main.py`
 - **输入**: 质量控制后的数据
 - **输出**: 面板比较结果
-
-#### 18. ToMMoPanelThr (`18.tommo_panel_thr/`)
-- **功能**: 应用 ToMMo 面板比较的阈值筛选
-- **脚本**: `scripts/panel_thr_main.py`
-- **输入**: 面板比较结果
-- **输出**: 阈值筛选结果
-
-#### 19. ToMMoPanelFilter (`19.tommo_panel_filter/`)
-- **功能**: 基于 ToMMo 面板比较结果进行最终过滤
-- **脚本**: `scripts/panel_filter_main.py`
-- **输入**: 阈值筛选结果
-- **输出**: 最终过滤的数据集
 
 ### 阶段 10: 最终数据准备 (Final Data Preparation)
 
@@ -290,15 +308,6 @@ wgs/
   - 人群分层检测 (Population Stratification Detection)
   - 异常样本识别 (Outlier Detection)
 - **输出**: PC坐标、载荷矩阵、可视化图表
-
-#### `pca_qc_tools.py`
-- **功能**: PCA分析工具集
-- **工具函数**:
-  - LD修剪参数优化
-  - PCA结果解释和可视化
-  - 人群分层评估
-  - 异常值检测算法
-- **可视化**: 生成PC1-PC2散点图、scree plot等
 
 ### 4. BBJ投影分析模块 (BBJ Projection Module)
 
@@ -435,7 +444,7 @@ wgs/
   - 比较算法参数
   - 过滤阈值设定
 
-### 脚本依赖关系 (Script Dependencies)
+## 脚本依赖关系 (Script Dependencies)
 
 ```
 sample_qc_main.py
@@ -531,3 +540,5 @@ nextflow run select.nf -c nextflow.config --entry <process_name>
 ---
 
 此管道为 CTEPH-AGP3K 项目的核心数据处理流程，经过充分测试和优化，适用于大规模 WGS 数据的质量控制和预处理。
+
+---
