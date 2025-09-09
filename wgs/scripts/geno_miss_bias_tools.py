@@ -143,7 +143,7 @@ def build_aligned_geno_mats(
     chunk_size: Optional[int] = None,
     max_parallel: int = 4,
     return_paths_only: bool = True,
-) -> Any:
+) -> Tuple[str, str]:
     """
     生成对齐的基因型矩阵（PLINK vs VCF），数值统一为 0/1/2 或 '.'（缺失）。
     假设两侧变体 ID 均为 CHR:POS:REF:ALT（本函数不在此修改 ID）。
@@ -160,7 +160,7 @@ def build_aligned_geno_mats(
       6) 写出分块清单（manifest），并按顺序拼接为最终矩阵：
          - `<work_dir>/chr{chrom_or_ALL}.pre.gt.tsv`
          - `<work_dir>/chr{chrom_or_ALL}.post.gt.tsv`
-      7) 日志：所有进度/告警/错误信息同步写入 `<work_dir>/geno_miss_bias.log`，同时打印到 stderr。
+      7) 日志：所有进度/告警/错误信息同步写入 `<work_dir>/geno_miss_bias.prepare.log`，同时打印到 stderr。
 
     参数（常用）：
       plink_prefix      : str  PLINK 二进制文件前缀（.bed/.bim/.fam）
@@ -183,7 +183,7 @@ def build_aligned_geno_mats(
       - 计数等位基因为 ALT（由 `.bim` 第二列解析），PLINK 与 VCF 数值语义对齐；
       - 样本列名仅为 IID（去掉 FID_ 前缀）；缺失一律输出为 '.'；
       - 交集为 0 时会导出少量样例 ID 用于人工比对；
-      - 运行日志保存在 `<work_dir>/geno_miss_bias.log`，建议先查看日志定位问题（如 chr 前缀、REF/ALT 顺序、VCF 空 ID 等）。
+      - 运行日志保存在 `<work_dir>/geno_miss_bias.prepare.log`，建议先查看日志定位问题（如 chr 前缀、REF/ALT 顺序、VCF 空 ID 等）。
     """
     # ---------- 路径与工作目录 ----------
     plink_bin = DEFAULT_PLINK2
@@ -197,7 +197,7 @@ def build_aligned_geno_mats(
     log_info(f"工作目录：{base_tmp}；缓存目录：{cache_dir}")
     # initialize log file in work_dir
     global LOG_FILE
-    LOG_FILE = os.path.join(base_tmp, "geno_miss_bias.log")
+    LOG_FILE = os.path.join(base_tmp, "geno_miss_bias.prepare.log")
     try:
         with open(LOG_FILE, "a") as lf:
             lf.write("="*72 + "\n")
@@ -241,6 +241,21 @@ def build_aligned_geno_mats(
             log_info(f"VCF 表头样本数：{vcfl}")
         except Exception as e:
             log_warn(f"统计 VCF 样本数失败：{e}")
+
+        # 构建 FID_IID → IID 的映射，以正确处理 IID 本身含有下划线的情况
+        fid_iid_to_iid: Dict[str, str] = {}
+        iid_set: set = set()
+        with open(fam_path, "r") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                parts = line.rstrip("\n").split()
+                if len(parts) < 2:
+                    continue
+                fid, iid = parts[0], parts[1]
+                fid_iid_to_iid[f"{fid}_{iid}"] = iid
+                iid_set.add(iid)
+        log_info(f"已建立 FID_IID→IID 映射：{len(fid_iid_to_iid)} 条；IID 数量：{len(iid_set)}")
 
         # ---------- 2) 解析 ALT ----------
         bim_path = plink_prefix + ".bim"
@@ -447,7 +462,33 @@ def build_aligned_geno_mats(
             # 只读需要的列
             df = pd.read_csv(traw_file, sep="\t", usecols=usecols, dtype=str)
             df = df.rename(columns={"SNP":"ID"})
-            iid_cols = [c.split("_")[-1] for c in sample_cols]
+            # 新的 IID 解析逻辑，兼容 FID_IID、IID含下划线等情况
+            iid_cols = []
+            heuristic_hits = 0
+            for c in sample_cols:
+                if c in fid_iid_to_iid:
+                    iid_cols.append(fid_iid_to_iid[c])
+                else:
+                    # 兼容异常：若表头直接就是 IID
+                    if c in iid_set:
+                        iid_cols.append(c)
+                    else:
+                        # 尝试用第一个下划线分割后的部分，如果在 IID 集合中，则采用
+                        if "_" in c:
+                            after_first = c.split("_", 1)[1]
+                            if after_first in iid_set:
+                                iid_cols.append(after_first)
+                                heuristic_hits += 1
+                                continue
+                            # 最后兜底：保留原逻辑取最后一段，但记录为启发式
+                            last_seg = c.rsplit("_", 1)[-1]
+                            iid_cols.append(last_seg)
+                            heuristic_hits += 1
+                        else:
+                            # 无下划线，无法分割，保留原样
+                            iid_cols.append(c)
+            if heuristic_hits > 0:
+                log_warn(f"样本列名有 {heuristic_hits} 项通过启发式规则推断 IID（请确认 FID/IID 映射是否完整）")
             df.columns = ["ID"] + iid_cols
             # 将 0/1/2/NA 规范成 可空整数；写出缺失为 '.'
             for c in iid_cols:
@@ -589,3 +630,760 @@ def build_aligned_geno_mats(
                     shutil.rmtree(cache_dir)
             except Exception as e:
                 log_warn(f"清理临时目录失败: {e}")
+                
+
+
+def harmonize_gt_matrices(
+    pre_mt: str,
+    post_mt: str,
+    out_pre: Optional[str] = None,
+    out_post: Optional[str] = None,
+    max_check_rows: int = 200000,
+) -> Tuple[str, str]:
+    """
+    对齐/修复两个大型基因型矩阵（pre / post）：
+      1) 检查并确保 ID 列（第一列）为 CHROM:POS:REF:ALT 格式；
+      2) 检查 ID 是否按 POS 升序；若不是则按 POS 进行稳定排序（保留表头在首行）；
+      3) 检查两侧列名（样本）内容/数量/顺序是否一致；若不一致，按照 post 的顺序修复：
+         - 若集合一致，仅重排 pre 的列顺序；
+         - 若集合不同，取两侧交集并警告，分别重写 pre/post 为交集顺序；
+      4) 过程产生的日志会写入 `<work_dir>/geno_miss_bias.log`（保持现有日志格式标签）。
+
+    为避免内存溢出，所有检查与修复均采用**流式处理**：不将全表读入内存。
+
+    参数：
+      pre_mt   : VCF → 矩阵路径（形如 `chr*.pre.gt.tsv`），第一列为 `ID`，其余列为 IID；
+      post_mt  : PLINK → 矩阵路径（形如 `chr*.post.gt.tsv`），第一列为 `ID`，其余列为 IID；
+      out_pre  : 修复后的 pre 输出路径（默认=原路径加后缀 `.harm.tsv`）；
+      out_post : 修复后的 post 输出路径（默认=原路径加后缀 `.harm.tsv`）；
+      max_check_rows : 验证排序时最多检查的行数（全量检查仍为流式；该参数仅控制提前退出阈值）。
+
+    返回：
+      (out_pre_path, out_post_path)
+    """
+    assert os.path.exists(pre_mt), f"pre_mt not found: {pre_mt}"
+    assert os.path.exists(post_mt), f"post_mt not found: {post_mt}"
+
+    out_pre = out_pre or (pre_mt + ".harm.tsv")
+    out_post = out_post or (post_mt + ".harm.tsv")
+
+    # 初始化日志文件（若未由其他函数设定）。日志路径默认放在输出目录公共前缀下。
+    global LOG_FILE
+    if LOG_FILE is None:
+        pre_dir = os.path.dirname(os.path.abspath(out_pre)) or os.getcwd()
+        post_dir = os.path.dirname(os.path.abspath(out_post)) or os.getcwd()
+        try:
+            base_dir = os.path.commonpath([pre_dir, post_dir])
+        except Exception:
+            base_dir = pre_dir or post_dir or os.getcwd()
+        LOG_FILE = os.path.join(base_dir, "geno_miss_bias.harmonize.log")
+        try:
+            with open(LOG_FILE, "a") as lf:
+                lf.write("="*72 + "\n")
+                lf.write(f"[{_now()}][INFO] 开始执行 harmonize_gt_matrices\n")
+                lf.write(f"[{_now()}][INFO] pre={pre_mt}; post={post_mt}\n")
+                lf.write(f"[{_now()}][INFO] out_pre={out_pre}; out_post={out_post}\n")
+        except Exception:
+            pass
+    log_info(f"日志文件：{LOG_FILE}")
+
+    # --- Logging: banner and context ---
+    log_info(f"开始对齐/修复矩阵：pre={pre_mt}；post={post_mt}")
+    log_info(f"输出路径：out_pre={out_pre}；out_post={out_post}")
+    log_info(f"排序抽检最大行数（max_check_rows）={max_check_rows}")
+
+    # --- 小工具 ---
+    import re
+    id_pat = re.compile(r"^[^:\t]+:\d+:[ACGTN]+:[ACGTN]+$")
+
+    def _read_header(path: str) -> List[str]:
+        with open(path, "r") as f:
+            hdr = f.readline().rstrip("\n").split("\t")
+        if len(hdr) < 2 or hdr[0] != "ID":
+            log_err(f"{os.path.basename(path)} 表头首列不是 'ID'，实际为：{hdr[0] if hdr else '<空>'}")
+            raise ValueError(f"Bad header in {path}: first column must be 'ID'")
+        return hdr
+
+    def _check_id_format(path: str, sample_n: int = 10000):
+        bad = 0
+        with open(path, "r") as f:
+            next(f)  # skip header
+            for i, line in enumerate(f, start=1):
+                if not line.strip():
+                    continue
+                vid = line.split("\t", 1)[0]
+                if not id_pat.match(vid):
+                    bad += 1
+                    if bad <= 5:
+                        log_warn(f"{os.path.basename(path)} 非法ID示例：{vid}")
+                if i >= sample_n and bad == 0:
+                    break
+        if bad > 0:
+            log_warn(f"{os.path.basename(path)} 中检测到 {bad} 个不符合 CHROM:POS:REF:ALT 的 ID（仅抽样统计）。")
+
+    def _is_sorted_by_pos(path: str, max_check: int = max_check_rows) -> bool:
+        last_pos = -1
+        checked = 0
+        with open(path, "r") as f:
+            next(f)  # header
+            for line in f:
+                if not line:
+                    continue
+                parts = line.split("\t", 1)
+                if not parts:
+                    continue
+                vid = parts[0]
+                a = vid.split(":")
+                if len(a) < 2 or not a[1].isdigit():
+                    return False
+                pos = int(a[1])
+                if pos < last_pos:
+                    return False
+                last_pos = pos
+                checked += 1
+                if checked >= max_check:
+                    break
+        return True
+
+    def _sort_by_pos(path: str, out_path: str):
+        tmp = out_path + ".tmp"
+        # 方案：首行单独写出；其余行前置 POS 做数字排序，再去掉前缀
+        cmd = (
+            "bash -lc "
+            + repr(
+                "{ head -n1 " + path +
+                " ; tail -n +2 " + path +
+                " | awk -F '\\t' '{split($1,a,\":\"); print a[2]\\t$0}'"
+                " | LC_ALL=C sort -t $'\\t' -k1,1n"
+                " | cut -f2- ; } > " + tmp
+            )
+        )
+        _run_cmd(cmd)
+        os.replace(tmp, out_path)
+        log_info(f"已按 POS 升序排序：{out_path}")
+
+    def _reorder_stream(in_path: str, out_path: str, desired_cols: List[str]):
+        """按 desired_cols（IID 顺序）重排/裁剪列：流式处理，仅持有当前行。"""
+        with open(in_path, "r") as fin:
+            header = fin.readline().rstrip("\n").split("\t")
+            cur_cols = header[1:]
+            idx_map = {name: i for i, name in enumerate(cur_cols)}
+            missing = [c for c in desired_cols if c not in idx_map]
+            extra = [c for c in cur_cols if c not in set(desired_cols)]
+            if missing:
+                log_warn(f"列缺失（将被跳过）：{len(missing)} 个，例如：{missing[:5]}")
+            if extra:
+                log_warn(f"多余列（将被丢弃）：{len(extra)} 个，例如：{extra[:5]}")
+            # 仅输出交集，顺序按 desired_cols
+            keep_idx = [idx_map[c] for c in desired_cols if c in idx_map]
+            with open(out_path, "w") as fout:
+                fout.write("ID\t" + "\t".join([cur_cols[i] for i in keep_idx]) + "\n")
+                for line in fin:
+                    if not line:
+                        continue
+                    parts = line.rstrip("\n").split("\t")
+                    idv = parts[0]
+                    row = [parts[1 + i] if 1 + i < len(parts) else '.' for i in keep_idx]
+                    fout.write(idv + "\t" + "\t".join(row) + "\n")
+
+    # 读取表头
+    post_hdr = _read_header(post_mt)
+    pre_hdr = _read_header(pre_mt)
+    post_samples = post_hdr[1:]
+    pre_samples = pre_hdr[1:]
+    log_info(f"表头校验完成：pre 列数（含ID）={len(pre_hdr)}，post 列数（含ID）={len(post_hdr)}")
+    log_info(f"样本数：pre={len(pre_samples)}；post={len(post_samples)}")
+
+    # 1) ID 格式检查（抽样）
+    _check_id_format(pre_mt)
+    _check_id_format(post_mt)
+    log_info("ID 格式抽检完成（若存在异常会在上方 WARN 提示示例）")
+
+    # 2) POS 升序检查；不满足则稳定排序
+    # 为避免覆写原文件，这里生成排序后的临时文件，并作为后续输入
+    log_info("开始检查 POS 升序……")
+    pre_sorted = pre_mt if _is_sorted_by_pos(pre_mt) else (pre_mt + ".possorted.tsv")
+    post_sorted = post_mt if _is_sorted_by_pos(post_mt) else (post_mt + ".possorted.tsv")
+    log_info(f"POS 升序检查结果：pre_sorted={'是' if pre_sorted==pre_mt else '否（将排序）'}；post_sorted={'是' if post_sorted==post_mt else '否（将排序）'}")
+    pre_need_sort = (pre_sorted != pre_mt)
+    post_need_sort = (post_sorted != post_mt)
+    if pre_need_sort:
+        log_warn("检测到 pre_mt 非 POS 升序，将进行排序……")
+        _sort_by_pos(pre_mt, pre_sorted)
+    if post_need_sort:
+        log_warn("检测到 post_mt 非 POS 升序，将进行排序……")
+        _sort_by_pos(post_mt, post_sorted)
+
+    # 3) 列名一致性与顺序修复
+    log_info("开始检查样本列名集合与顺序……")
+    same_set = set(pre_samples) == set(post_samples)
+    same_order = pre_samples == post_samples
+    log_info(f"样本集合是否一致：{same_set}；样本顺序是否一致：{same_order}")
+
+    if same_set and same_order:
+        if not pre_need_sort and not post_need_sort:
+            # 完全无需修复：直接返回原路径（不做任何复制）
+            log_info("无需修复：直接返回原路径（ID 已按 POS 升序，样本集合与顺序一致）")
+            log_info(f"对齐完成：out_pre={pre_mt}；out_post={post_mt}")
+            try:
+                with open(LOG_FILE, "a") as lf:
+                    lf.write(f"[{_now()}][INFO] 完成 harmonize_gt_matrices\n")
+                    lf.write("="*72 + "\n")
+            except Exception:
+                pass
+            return pre_mt, post_mt
+        else:
+            # 仅涉及排序：复制排序后的文件到输出
+            log_info("无需更改样本集合/顺序：仅输出按 POS 排序后的文件")
+            if pre_sorted != out_pre:
+                shutil.copyfile(pre_sorted, out_pre)
+            else:
+                out_pre = pre_sorted
+            if post_sorted != out_post:
+                shutil.copyfile(post_sorted, out_post)
+            else:
+                out_post = post_sorted
+            log_info(f"对齐完成：out_pre={out_pre}；out_post={out_post}")
+            try:
+                with open(LOG_FILE, "a") as lf:
+                    lf.write(f"[{_now()}][INFO] 完成 harmonize_gt_matrices\n")
+                    lf.write("="*72 + "\n")
+            except Exception:
+                pass
+            return out_pre, out_post
+
+    if same_set and not same_order:
+        log_info("仅重排 pre 的样本顺序以匹配 post（列集合一致）")
+        # 仅重排 pre 为 post 顺序；post 直接拷贝
+        _reorder_stream(pre_sorted, out_pre, post_samples)
+        if post_sorted != out_post:
+            shutil.copyfile(post_sorted, out_post)
+        else:
+            out_post = post_sorted
+        log_info(f"对齐完成：out_pre={out_pre}；out_post={out_post}")
+        try:
+            with open(LOG_FILE, "a") as lf:
+                lf.write(f"[{_now()}][INFO] 完成 harmonize_gt_matrices\n")
+                lf.write("="*72 + "\n")
+        except Exception:
+            pass
+        return out_pre, out_post
+
+    # 集合不同：取交集并分别重写两侧
+    inter = [s for s in post_samples if s in set(pre_samples)]
+    if not inter:
+        log_err("两侧样本集合没有交集，无法对齐矩阵。")
+        raise ValueError("No overlapping samples between pre_mt and post_mt")
+    dropped_post = [s for s in post_samples if s not in set(inter)]
+    dropped_pre = [s for s in pre_samples if s not in set(inter)]
+    if dropped_post:
+        log_warn(f"post_mt 中将被丢弃的样本：{len(dropped_post)} 个，例如：{dropped_post[:5]}")
+    if dropped_pre:
+        log_warn(f"pre_mt 中将被丢弃的样本：{len(dropped_pre)} 个，例如：{dropped_pre[:5]}")
+
+    log_info(f"按交集重写两侧：交集样本数={len(inter)}；pre丢弃={len(dropped_pre)}；post丢弃={len(dropped_post)}")
+    _reorder_stream(pre_sorted, out_pre, inter)
+    _reorder_stream(post_sorted, out_post, inter)
+    log_info(f"对齐完成：out_pre={out_pre}；out_post={out_post}")
+    try:
+        with open(LOG_FILE, "a") as lf:
+            lf.write(f"[{_now()}][INFO] 完成 harmonize_gt_matrices\n")
+            lf.write("="*72 + "\n")
+    except Exception:
+        pass
+    return out_pre, out_post
+
+
+import sqlite3
+
+def reorder_pre_to_post(
+    pre_mt: str,
+    post_mt: str,
+    out_pre: Optional[str] = None,
+    out_post: Optional[str] = None,
+) -> Tuple[str, str]:
+    """
+    使用 `post_mt` 的**行顺序与列顺序**，对超大的 `pre_mt` 进行严格对齐重排，输出两个新文件路径：
+      - `out_pre`：按 `post_mt` 的列（样本 IID）与行（变体 ID）顺序重排后的 pre 矩阵；
+      - `out_post`：`post_mt` 的副本（作为配对输出，便于下游统一使用）。
+
+    设计目标：
+      - **不把整表读入内存**。通过磁盘 SQLite 索引（ID -> 文件偏移）实现 O(1) 随机读取 pre 的行；
+      - 列重排按 post 的 IID 顺序进行；pre 中缺失的样本列用 '.' 补齐，pre 中多余列被丢弃并记录日志；
+      - 若某个 post 的 ID 在 pre 中不存在，整行以 '.' 填充并 WARN 计数；
+      - 表头首列要求为 'ID'，分隔符为 TAB。
+
+    返回：(out_pre_path, out_post_path)
+    """
+    assert os.path.exists(pre_mt), f"pre_mt not found: {pre_mt}"
+    assert os.path.exists(post_mt), f"post_mt not found: {post_mt}"
+
+    out_pre = out_pre or (pre_mt + ".reordered.tsv")
+    out_post = out_post or (post_mt + ".reordered.tsv")
+
+    # 准备日志（如未设置全局 LOG_FILE，则在 CWD 建一个专用日志）
+    global LOG_FILE
+    if LOG_FILE is None:
+        try:
+            base_dir = os.getcwd()
+        except Exception:
+            base_dir = "."
+        LOG_FILE = os.path.join(base_dir, "geno_miss_bias.reorder.log")
+        try:
+            with open(LOG_FILE, "a") as lf:
+                lf.write("="*72 + "\n")
+                lf.write(f"[{_now()}][INFO] 开始执行 reorder_pre_to_post\n")
+                lf.write(f"[{_now()}][INFO] pre={pre_mt}; post={post_mt}\n")
+                lf.write(f"[{_now()}][INFO] out_pre={out_pre}; out_post={out_post}\n")
+        except Exception:
+            pass
+    log_info(f"日志文件：{LOG_FILE}")
+
+    # 读取表头，建立列顺序映射
+    with open(post_mt, "r") as fpost:
+        post_header = fpost.readline().rstrip("\n").split("\t")
+    if len(post_header) < 2 or post_header[0] != "ID":
+        log_err("post_mt 表头首列必须为 'ID'")
+        raise ValueError("Bad post header")
+    post_iids = post_header[1:]
+
+    with open(pre_mt, "r") as fpre:
+        pre_header = fpre.readline().rstrip("\n").split("\t")
+    if len(pre_header) < 2 or pre_header[0] != "ID":
+        log_err("pre_mt 表头首列必须为 'ID'")
+        raise ValueError("Bad pre header")
+    pre_iids = pre_header[1:]
+
+    # 列重排映射：按 post 的顺序提取 pre 的列；缺失用 '.'
+    pre_idx_map = {name: i for i, name in enumerate(pre_iids)}
+    keep_idx = []
+    missing_cols = []
+    for name in post_iids:
+        if name in pre_idx_map:
+            keep_idx.append(pre_idx_map[name])
+        else:
+            keep_idx.append(None)
+            missing_cols.append(name)
+    extra_cols = [c for c in pre_iids if c not in set(post_iids)]
+    if missing_cols:
+        log_warn(f"pre 中缺失 {len(missing_cols)} 个样本列，将以 '.' 补齐，例如：{missing_cols[:5]}")
+    if extra_cols:
+        log_warn(f"pre 中存在 {len(extra_cols)} 个多余样本列，将被丢弃，例如：{extra_cols[:5]}")
+
+    # 为 post 建立行顺序（按 post 行序输出）
+    # 同时为 pre 建立磁盘索引：ID -> 文件偏移
+    tmp_db = None
+    conn = None
+    try:
+        tmp_db = tempfile.NamedTemporaryFile(prefix="pre_index_", suffix=".sqlite", delete=False)
+        tmp_db.close()
+        conn = sqlite3.connect(tmp_db.name)
+        conn.execute("PRAGMA synchronous=OFF")
+        conn.execute("PRAGMA journal_mode=OFF")
+        conn.execute("CREATE TABLE idx (id TEXT PRIMARY KEY, off INTEGER)")
+        cur = conn.cursor()
+
+        # 扫描 pre 文件，建立偏移索引
+        log_info("开始建立 pre 行索引（ID -> 文件偏移）……")
+        with open(pre_mt, "rb") as fpreb:
+            header_line = fpreb.readline()  # skip header
+            off = fpreb.tell()
+            batch = []
+            batch_size = 100000
+            n_rows = 0
+            while True:
+                pos = fpreb.tell()
+                line = fpreb.readline()
+                if not line:
+                    break
+                if line == b"\n":
+                    off = fpreb.tell()
+                    continue
+                # 仅提取第一列 ID（直到第一个 tab）
+                try:
+                    tab = line.find(b"\t")
+                    if tab == -1:
+                        off = fpreb.tell()
+                        continue
+                    vid = line[:tab].decode("utf-8", errors="ignore")
+                except Exception:
+                    off = fpreb.tell()
+                    continue
+                batch.append((vid, pos))
+                n_rows += 1
+                if len(batch) >= batch_size:
+                    cur.executemany("INSERT OR REPLACE INTO idx(id, off) VALUES(?, ?)", batch)
+                    conn.commit()
+                    batch.clear()
+                off = fpreb.tell()
+            if batch:
+                cur.executemany("INSERT OR REPLACE INTO idx(id, off) VALUES(?, ?)", batch)
+                conn.commit()
+        log_info("pre 行索引建立完成")
+
+        # 写出对齐后的 pre，并生成 post 的副本
+        log_info("开始根据 post 行/列顺序输出对齐后的 pre……")
+        with open(pre_mt, "rb") as fpreb, \
+             open(post_mt, "r") as fpost, \
+             open(out_pre, "w") as fpre_out:
+            # 写表头：ID + post_iids
+            fpre_out.write("ID\t" + "\t".join(post_iids) + "\n")
+            # 跳过 pre 头
+            _ = fpreb.readline()
+            # 遍历 post 的每一行，按顺序输出对应的 pre 行
+            missing_ids = 0
+            total_ids = 0
+            for j, line in enumerate(fpost):
+                if j == 0:
+                    continue  # 已读过表头
+                parts = line.rstrip("\n").split("\t", 1)
+                if not parts or parts[0] == "":
+                    continue
+                vid = parts[0]
+                total_ids += 1
+                row = None
+                # 在索引中查找偏移
+                r = conn.execute("SELECT off FROM idx WHERE id=?", (vid,)).fetchone()
+                if r is not None:
+                    off = r[0]
+                    fpreb.seek(off)
+                    raw = fpreb.readline().decode("utf-8", errors="ignore").rstrip("\n")
+                    cols = raw.split("\t")
+                    # cols[0] 应该是 ID
+                    if cols and cols[0] == vid:
+                        # 重排列
+                        vals = cols[1:]
+                        out_vals = []
+                        for k in keep_idx:
+                            if k is None:
+                                out_vals.append('.')
+                            else:
+                                v = vals[k] if k < len(vals) else ''
+                                out_vals.append(v if v != '' else '.')
+                        row = vid + "\t" + "\t".join(out_vals)
+                if row is None:
+                    # pre 中不存在该 ID：整行 '.'
+                    missing_ids += 1
+                    row = vid + "\t" + "\t".join(['.'] * len(post_iids))
+                fpre_out.write(row + "\n")
+        if missing_ids > 0:
+            log_warn(f"在 post 的 {total_ids} 个 ID 中，pre 缺失 {missing_ids} 个；对应行已用 '.' 填充")
+        else:
+            log_info("pre 与 post 的变体 ID 全部匹配，无缺失")
+
+        # 复制 post 为配对输出文件
+        if out_post == post_mt:
+            log_info("目标 out_post 等于原始 post 路径，跳过复制")
+        else:
+            shutil.copyfile(post_mt, out_post)
+            log_info(f"已复制 post 到：{out_post}")
+
+        try:
+            with open(LOG_FILE, "a") as lf:
+                lf.write(f"[{_now()}][INFO] 完成 reorder_pre_to_post\n")
+                lf.write("="*72 + "\n")
+        except Exception:
+            pass
+        return out_pre, out_post
+
+    finally:
+        try:
+            if conn is not None:
+                conn.close()
+        except Exception:
+            pass
+        if tmp_db and os.path.exists(tmp_db.name):
+            try:
+                os.remove(tmp_db.name)
+            except Exception:
+                pass
+
+
+
+from typing import List
+
+def build_sample_group_info(
+    info_xls: str,
+    sample_list: List[str],   # 改成 List
+    id_col: str = "ID",
+    use_cols: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """
+    读取样本信息表，并按给定样本列表筛选与清洗列：
+      - 仅保留 `id_col` 在 `sample_list` 内的行（`id_col` 按字符串读取）。
+      - 默认选择列：['WGS', 'Target DP (JHRPv4)', 'DP (JHRPv4)']。
+      - 对含有多项且以 '|' 分割的单元格：
+          * `Target DP (JHRPv4)`: 若为 "15x | 30x" 等，取第一个非空项并去空格（例如 "15x"）。
+          * `WGS`: 取第一个非空项并去空格（例如 "HiSeqX 15x | NovaSeq 30x" → "HiSeqX 15x"）。
+          * `DP (JHRPv4)`: 取第一个非空项并去空格（例如 "16.5307 | 16.5307" → "16.5307"），并转换为 float。
+    返回：包含 `id_col` 与所选列的 DataFrame（`id_col` 为列，不设为索引）。
+    """
+
+    # 初始化独立日志文件（仅当未由其它流程设定 LOG_FILE 时）
+    global LOG_FILE
+    if LOG_FILE is None:
+        # 默认将日志写到当前工作目录
+        try:
+            base_dir = os.getcwd()
+        except Exception:
+            base_dir = "."
+        LOG_FILE = os.path.join(base_dir, "group_info.log")
+        try:
+            with open(LOG_FILE, "a") as lf:
+                lf.write("="*72 + "\n")
+                lf.write(f"[{_now()}][INFO] 开始执行 build_sample_group_info\n")
+                lf.write(f"[{_now()}][INFO] info_xls={info_xls}\n")
+                lf.write(f"[{_now()}][INFO] cwd={os.path.abspath(base_dir)}\n")
+        except Exception:
+            pass
+    log_info(f"日志文件：{LOG_FILE}")
+
+    assert os.path.exists(info_xls), f"info_xls not found: {info_xls}"
+
+    default_cols = ["WGS", "Target DP (JHRPv4)", "DP (JHRPv4)"]
+    if use_cols is None:
+        use_cols = default_cols
+    else:
+        use_cols = list(use_cols)
+
+    read_cols = [id_col] + use_cols
+    try:
+        df = pd.read_excel(info_xls, dtype={id_col: str}, engine=None, usecols=lambda c: c in set(read_cols))
+    except Exception as e:
+        log_warn(f"read_excel 失败（可能不是 Excel？）：{e}，尝试按 TSV 读取……")
+        try:
+            df = pd.read_csv(info_xls, sep="\t", dtype={id_col: str}, usecols=lambda c: c in set(read_cols))
+        except Exception as e2:
+            log_err(f"既非可读 Excel 也非 TSV：{e2}")
+            raise
+
+    df = df.loc[df[id_col].notna()].copy()
+    df[id_col] = df[id_col].astype(str)
+
+    # 仅保留在 sample_list 内的样本
+    before = len(df)
+    df = df[df[id_col].isin(sample_list)].copy()
+    after = len(df)
+    log_info(f"样本筛选：输入 {before} 行，匹配 sample_list 后保留 {after} 行")
+
+    for col in use_cols:
+        if col not in df.columns:
+            df[col] = pd.NA
+            log_warn(f"缺少列：{col}，将以缺失填充")
+
+    def _first_token(val: Any) -> Any:
+        if pd.isna(val):
+            return val
+        s = str(val)
+        parts = [p.strip() for p in s.split('|')]
+        for p in parts:
+            if p != "":
+                return p
+        return ""
+
+    if "Target DP (JHRPv4)" in df.columns:
+        df["Target DP (JHRPv4)"] = df["Target DP (JHRPv4)"].map(_first_token)
+        df["Target DP (JHRPv4)"] = df["Target DP (JHRPv4)"].astype(str).str.strip()
+
+    if "WGS" in df.columns:
+        df["WGS"] = df["WGS"].map(_first_token)
+
+    if "DP (JHRPv4)" in df.columns:
+        df["DP (JHRPv4)"] = df["DP (JHRPv4)"].map(_first_token)
+        def _to_float(x):
+            try:
+                return float(str(x).strip()) if pd.notna(x) and str(x).strip() != "" else pd.NA
+            except Exception:
+                return pd.NA
+        df["DP (JHRPv4)"] = df["DP (JHRPv4)"].map(_to_float)
+
+    df = df[[id_col] + use_cols]
+
+    log_info(f"已生成分组信息表：行数={len(df)}；列={ [id_col] + use_cols }")
+    try:
+        with pd.option_context('display.max_columns', None, 'display.width', 200):
+            log_info("示例预览（前5行）：\n" + df.head(5).to_string(index=False))
+    except Exception:
+        pass
+
+    try:
+        with open(LOG_FILE, "a") as lf:
+            lf.write(f"[{_now()}][INFO] 完成 build_sample_group_info\n")
+            lf.write("="*72 + "\n")
+    except Exception:
+        pass
+    return df
+
+
+def compute_coverage_transition_counts(
+    out_pre_order: str,
+    out_post_order: str,
+    df_info: pd.DataFrame,
+    id_col: str = "ID",
+    coverage_col: str = "Target DP (JHRPv4)",
+    coverage_labels: Tuple[str, str] = ("15x", "30x"),
+    out_path: Optional[str] = None,
+) -> str:
+    """
+    基于**已对齐行列顺序**的超大矩阵（`out_pre_order`, `out_post_order`），在
+    **15x/30x 覆盖分组**内逐位点统计以下转换计数：
+      - 0 -> .
+      - 1 -> .
+      - 2 -> .
+      - . -> .
+
+    约束/假设：
+      - 两个矩阵均为制表符分隔，**第一列为 `ID`（变体ID）**，首行是表头：`ID + sample_ids`；
+      - 两矩阵的样本列顺序**一致**（若不一致请先用 `reorder_pre_to_post()` 处理）。
+    设计：
+      - **流式逐行**读取，常数内存；
+      - 覆盖分组基于 `df_info[id_col, coverage_col]`，若某样本缺少覆盖度信息则跳过；
+      - 覆盖文本先取 `|` 的第一个 token 并归一化为 `"15x"/"30x"`。
+
+    输出：写入 TSV 文件（默认与 `out_post_order` 同目录，文件名 `coverage_transitions.tsv`），
+      列为：
+        ID,
+        15x_0_to_missing, 15x_1_to_missing, 15x_2_to_missing, 15x_missing_to_missing,
+        30x_0_to_missing, 30x_1_to_missing, 30x_2_to_missing, 30x_missing_to_missing
+    返回该 TSV 路径。
+    """
+    assert os.path.exists(out_pre_order), f"pre matrix not found: {out_pre_order}"
+    assert os.path.exists(out_post_order), f"post matrix not found: {out_post_order}"
+
+    # 初始化日志（若未设置）
+    global LOG_FILE
+    if LOG_FILE is None:
+        try:
+            base_dir = os.getcwd()
+        except Exception:
+            base_dir = "."
+        LOG_FILE = os.path.join(base_dir, "geno_miss_bias.coverage_transitions.log")
+        try:
+            with open(LOG_FILE, "a") as lf:
+                lf.write("="*72 + "\n")
+                lf.write(f"[{_now()}][INFO] 开始执行 compute_coverage_transition_counts\n")
+                lf.write(f"[{_now()}][INFO] pre={out_pre_order}; post={out_post_order}\n")
+        except Exception:
+            pass
+    log_info(f"日志文件：{LOG_FILE}")
+
+    # 读取表头并校验样本顺序
+    with open(out_pre_order, "r") as fpre, open(out_post_order, "r") as fpost:
+        hdr_pre = fpre.readline().rstrip("\n").split("\t")
+        hdr_post = fpost.readline().rstrip("\n").split("\t")
+    if not hdr_pre or hdr_pre[0] != "ID":
+        log_err("pre 矩阵首列必须为 'ID'")
+        raise ValueError("Bad header in pre matrix")
+    if not hdr_post or hdr_post[0] != "ID":
+        log_err("post 矩阵首列必须为 'ID'")
+        raise ValueError("Bad header in post matrix")
+    if hdr_pre[1:] != hdr_post[1:]:
+        log_err("pre/post 样本列顺序不一致，请先调用 reorder_pre_to_post()")
+        raise ValueError("Sample order mismatch between matrices")
+
+    iids = hdr_post[1:]
+    iid_to_idx = {iid: i for i, iid in enumerate(iids)}
+
+    # 从 df_info 构造覆盖分组索引（列下标列表）
+    if id_col not in df_info.columns:
+        log_err(f"df_info 缺少列：{id_col}")
+        raise KeyError(f"df_info missing column {id_col}")
+    if coverage_col not in df_info.columns:
+        log_err(f"df_info 缺少列：{coverage_col}")
+        raise KeyError(f"df_info missing column {coverage_col}")
+
+    def _first_token(s: Any) -> str:
+        if pd.isna(s):
+            return ""
+        tok = str(s).split('|')[0].strip()
+        return tok
+
+    def _norm_cov(tok: str) -> str:
+        # 归一化为 "15x" / "30x"（若无法解析则返回原样小写去空格）
+        import re
+        if not tok:
+            return ""
+        m = re.search(r"(\d+)\s*[xX]", tok)
+        if m:
+            return f"{m.group(1)}x"
+        return tok.lower().strip()
+
+    cov_a, cov_b = coverage_labels
+    meta = df_info[[id_col, coverage_col]].copy()
+    meta[id_col] = meta[id_col].astype(str)
+    meta["__cov"] = meta[coverage_col].map(_first_token).map(_norm_cov)
+
+    cov_idx = {cov_a: [], cov_b: []}
+    missing_iids = 0
+    for _, r in meta.iterrows():
+        iid = r[id_col]
+        cov = r["__cov"]
+        if iid in iid_to_idx and cov in cov_idx:
+            cov_idx[cov].append(iid_to_idx[iid])
+        else:
+            if iid in iid_to_idx:
+                missing_iids += 1  # 样本存在但没有识别到 15x/30x
+    if missing_iids:
+        log_warn(f"有 {missing_iids} 个矩阵样本在 df_info 中未映射到 15x/30x，将不计入任何分组")
+    log_info(f"覆盖分组样本数：{cov_a}={len(cov_idx[cov_a])}；{cov_b}={len(cov_idx[cov_b])}")
+
+    # 输出路径与表头
+    base_dir = os.path.dirname(os.path.abspath(out_post_order)) or os.getcwd()
+    out_path = out_path or os.path.join(base_dir, "coverage_transitions.tsv")
+    header_cols = [
+        f"{cov_a}_0_to_missing", f"{cov_a}_1_to_missing", f"{cov_a}_2_to_missing", f"{cov_a}_missing_to_missing",
+        f"{cov_b}_0_to_missing", f"{cov_b}_1_to_missing", f"{cov_b}_2_to_missing", f"{cov_b}_missing_to_missing",
+    ]
+    with open(out_path, "w") as fout:
+        fout.write("ID\t" + "\t".join(header_cols) + "\n")
+
+    # 流式逐行统计
+    def _count_transitions(vals_pre: List[str], vals_post: List[str], idxs: List[int]) -> Tuple[int,int,int,int]:
+        c0 = c1 = c2 = cm = 0
+        for j in idxs:
+            if j >= len(vals_pre) or j >= len(vals_post):
+                continue
+            a = vals_pre[j]
+            b = vals_post[j]
+            if a == '.' and b == '.':
+                cm += 1
+            elif a == '0' and b == '.':
+                c0 += 1
+            elif a == '1' and b == '.':
+                c1 += 1
+            elif a == '2' and b == '.':
+                c2 += 1
+        return c0, c1, c2, cm
+
+    with open(out_pre_order, "r") as fpre, open(out_post_order, "r") as fpost, open(out_path, "a") as fout:
+        _ = fpre.readline(); _ = fpost.readline()  # skip headers
+        line_no = 0
+        while True:
+            lpre = fpre.readline()
+            lpost = fpost.readline()
+            if not lpre and not lpost:
+                break
+            if not lpre or not lpost:
+                log_err("pre/post 行数不一致")
+                raise RuntimeError("Row count mismatch between pre and post")
+            line_no += 1
+            sp = lpre.rstrip("\n").split("\t")
+            sq = lpost.rstrip("\n").split("\t")
+            vid_p = sp[0]; vid_q = sq[0]
+            if vid_p != vid_q:
+                log_err(f"第 {line_no} 行 ID 不一致：pre={vid_p}；post={vid_q}")
+                raise RuntimeError("Row ID mismatch")
+            vals_pre = sp[1:]
+            vals_post = sq[1:]
+            a0, a1, a2, am = _count_transitions(vals_pre, vals_post, cov_idx[cov_a])
+            b0, b1, b2, bm = _count_transitions(vals_pre, vals_post, cov_idx[cov_b])
+            fout.write(vid_p + "\t" + "\t".join(map(str, (a0,a1,a2,am,b0,b1,b2,bm))) + "\n")
+
+    try:
+        with open(LOG_FILE, "a") as lf:
+            lf.write(f"[{_now()}][INFO] 完成 compute_coverage_transition_counts；输出={out_path}\n")
+            lf.write("="*72 + "\n")
+    except Exception:
+        pass
+
+    return out_path
