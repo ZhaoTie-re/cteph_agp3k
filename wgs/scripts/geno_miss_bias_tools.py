@@ -1327,12 +1327,15 @@ def compute_coverage_transition_counts(
         log_warn(f"有 {missing_iids} 个矩阵样本在 df_info 中未映射到 15x/30x，将不计入任何分组")
     log_info(f"覆盖分组样本数：{cov_a}={len(cov_idx[cov_a])}；{cov_b}={len(cov_idx[cov_b])}")
 
+    # 组内样本总数（用于计算未 drop 到缺失的数量）
+    n_cov_a = len(cov_idx[cov_a])
+    n_cov_b = len(cov_idx[cov_b])
     # 输出路径与表头
     base_dir = os.path.dirname(os.path.abspath(out_post_order)) or os.getcwd()
     out_path = out_path or os.path.join(base_dir, "coverage_transitions.tsv")
     header_cols = [
-        f"{cov_a}_0_to_missing", f"{cov_a}_1_to_missing", f"{cov_a}_2_to_missing", f"{cov_a}_missing_to_missing",
-        f"{cov_b}_0_to_missing", f"{cov_b}_1_to_missing", f"{cov_b}_2_to_missing", f"{cov_b}_missing_to_missing",
+        f"{cov_a}_0_to_missing", f"{cov_a}_1_to_missing", f"{cov_a}_2_to_missing", f"{cov_a}_missing_to_missing", f"{cov_a}_not_missing",
+        f"{cov_b}_0_to_missing", f"{cov_b}_1_to_missing", f"{cov_b}_2_to_missing", f"{cov_b}_missing_to_missing", f"{cov_b}_not_missing",
     ]
     with open(out_path, "w") as fout:
         fout.write("ID\t" + "\t".join(header_cols) + "\n")
@@ -1377,7 +1380,11 @@ def compute_coverage_transition_counts(
             vals_post = sq[1:]
             a0, a1, a2, am = _count_transitions(vals_pre, vals_post, cov_idx[cov_a])
             b0, b1, b2, bm = _count_transitions(vals_pre, vals_post, cov_idx[cov_b])
-            fout.write(vid_p + "\t" + "\t".join(map(str, (a0,a1,a2,am,b0,b1,b2,bm))) + "\n")
+            a_keep = n_cov_a - (a0 + a1 + a2 + am)
+            b_keep = n_cov_b - (b0 + b1 + b2 + bm)
+            if a_keep < 0: a_keep = 0
+            if b_keep < 0: b_keep = 0
+            fout.write(vid_p + "\t" + "\t".join(map(str, (a0,a1,a2,am,a_keep,b0,b1,b2,bm,b_keep))) + "\n")
 
     try:
         with open(LOG_FILE, "a") as lf:
@@ -1387,3 +1394,179 @@ def compute_coverage_transition_counts(
         pass
 
     return out_path
+
+
+from contextlib import nullcontext
+
+def summarize_coverage_transition_significance(
+    transitions_tsv: str,
+    coverage_labels: Tuple[str, str] = ("15x", "30x"),
+    out_summary: Optional[str] = None,
+    n_resamples: int = 9999,
+    rng: int = 42,
+) -> str:
+    """
+    基于 `compute_coverage_transition_counts()` 产出的 `coverage_transitions.tsv`，为每个变体计算：
+      1) 2×2 精确检验（Fisher exact，two-sided）：
+         行 = {15x, 30x}；列 = {not_missing, drop_to_missing}，其中
+         drop_to_missing = 0_to_missing + 1_to_missing + 2_to_missing。
+         结果命名为 `p_cov_2x2`。
+      2) 2×3 Fisher Monte Carlo（仅使用精确蒙特卡罗，不再使用卡方近似）：
+         行 = {15x, 30x}；列 = {0_to_missing, 1_to_missing, 2_to_missing}。
+         **若至少两列在两行合计均为 0（即该列总和为 0），则不进行检验**，记录 warn 并将 `p_cov_2x3` 置为 `NA`；
+         其余情况（允许存在为 0 的列，但不能有 ≥2 列总和为 0）则使用 `scipy.stats.fisher_exact` 的 `MonteCarloMethod` 进行检验。
+
+    规模可能很大：本函数**流式逐行**读取并写出 `stat_summary.tsv`，避免将整表载入内存。
+
+    参数：
+      transitions_tsv : `compute_coverage_transition_counts` 输出路径
+      coverage_labels : 覆盖标签（默认 ("15x","30x")），需与 transitions 表头匹配
+      out_summary     : 统计汇总输出路径（默认与输入同目录 `stat_summary.tsv`）
+      n_resamples     : Monte Carlo 重抽样次数（若支持 RxC Fisher Monte Carlo）
+      rng             : 随机数种子
+
+    返回： out_summary 路径
+    """
+    assert os.path.exists(transitions_tsv), f"transitions file not found: {transitions_tsv}"
+
+    # 初始化日志（若未设置）
+    global LOG_FILE
+    if LOG_FILE is None:
+        try:
+            base_dir = os.getcwd()
+        except Exception:
+            base_dir = "."
+        LOG_FILE = os.path.join(base_dir, "geno_miss_bias.summary.log")
+        try:
+            with open(LOG_FILE, "a") as lf:
+                lf.write("="*72 + "\n")
+                lf.write(f"[{_now()}][INFO] 开始执行 summarize_coverage_transition_significance\n")
+                lf.write(f"[{_now()}][INFO] transitions_tsv={transitions_tsv}\n")
+        except Exception:
+            pass
+    log_info(f"日志文件：{LOG_FILE}")
+
+    cov_a, cov_b = coverage_labels
+
+    # 解析表头，确定所需列索引
+    with open(transitions_tsv, "r") as fin:
+        header = fin.readline().rstrip("\n").split("\t")
+    required_cols = [
+        f"{cov_a}_0_to_missing", f"{cov_a}_1_to_missing", f"{cov_a}_2_to_missing", f"{cov_a}_not_missing",
+        f"{cov_b}_0_to_missing", f"{cov_b}_1_to_missing", f"{cov_b}_2_to_missing", f"{cov_b}_not_missing",
+    ]
+    missing = [c for c in required_cols if c not in header]
+    if missing:
+        log_err(f"coverage_transitions 缺少必要列：{missing}")
+        raise KeyError("Missing required columns in transitions file")
+
+    # 建立列索引
+    idx = {name: header.index(name) for name in required_cols}
+    id_idx = 0  # 首列 ID
+
+    # 输出路径
+    base_dir = os.path.dirname(os.path.abspath(transitions_tsv)) or os.getcwd()
+    out_summary = out_summary or os.path.join(base_dir, "stat_summary.tsv")
+    with open(out_summary, "w") as fout:
+        fout.write("ID\tp_cov_2x2\tp_cov_2x3\twarn" + "\n")
+
+    # 函数内工具：安全转换为整数
+    def to_int(x: str) -> int:
+        try:
+            return int(x)
+        except Exception:
+            return 0
+
+    # SciPy 检验函数准备（2x2 使用 fisher_exact；2x3 使用 fisher_exact + MonteCarloMethod）
+    fisher_exact_fn = None
+    MonteCarloMethodCls = None
+    try:
+        from scipy.stats import fisher_exact as _fisher_exact
+        fisher_exact_fn = _fisher_exact
+    except Exception as e:
+        log_warn(f"无法导入 scipy.stats.fisher_exact：{e}")
+    try:
+        from scipy.stats import MonteCarloMethod as _MonteCarloMethod
+        MonteCarloMethodCls = _MonteCarloMethod
+    except Exception as e:
+        log_warn(f"无法导入 scipy.stats.MonteCarloMethod（RxC Monte Carlo 将不可用）：{e}")
+
+    # 逐行流式处理
+    n_rows = 0
+    n_warn = 0
+    with open(transitions_tsv, "r") as fin, open(out_summary, "a") as fout:
+        _ = fin.readline()  # skip header
+        for line in fin:
+            if not line:
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) <= max(idx.values()):
+                continue
+            vid = parts[id_idx]
+            a0 = to_int(parts[idx[f"{cov_a}_0_to_missing"]])
+            a1 = to_int(parts[idx[f"{cov_a}_1_to_missing"]])
+            a2 = to_int(parts[idx[f"{cov_a}_2_to_missing"]])
+            a_keep = to_int(parts[idx[f"{cov_a}_not_missing"]])
+            b0 = to_int(parts[idx[f"{cov_b}_0_to_missing"]])
+            b1 = to_int(parts[idx[f"{cov_b}_1_to_missing"]])
+            b2 = to_int(parts[idx[f"{cov_b}_2_to_missing"]])
+            b_keep = to_int(parts[idx[f"{cov_b}_not_missing"]])
+
+            drop_a = a0 + a1 + a2
+            drop_b = b0 + b1 + b2
+
+            # --- (1) 2x2 Fisher exact ---
+            p1 = "NA"
+            try:
+                if fisher_exact_fn is not None:
+                    # 2x2 Fisher exact，two-sided
+                    _, p = fisher_exact_fn([[a_keep, drop_a], [b_keep, drop_b]], alternative='two-sided')
+                    p1 = f"{p:.6g}"
+                else:
+                    p1 = "NA"
+            except Exception as e:
+                log_warn(f"2x2 检验失败（{vid}）：{e}")
+                p1 = "NA"
+
+            # --- (2) 2x3 Fisher Monte Carlo（仅蒙特卡罗；无卡方近似） ---
+            warn_msg = ""
+            cols_sum = [a0 + b0, a1 + b1, a2 + b2]
+            zero_cols = sum(1 for s in cols_sum if s == 0)
+            p2 = "NA"
+            if zero_cols >= 2:
+                warn_msg = (
+                    "2x3 跳过：至少两列总和为0，信息不足；counts="
+                    f"{{0:{(a0,b0)}, 1:{(a1,b1)}, 2:{(a2,b2)}}}"
+                )
+                n_warn += 1
+            else:
+                table = [[a0, a1, a2], [b0, b1, b2]]
+                if fisher_exact_fn is not None and MonteCarloMethodCls is not None:
+                    try:
+                        import numpy as _np
+                        rng_obj = _np.random.default_rng(rng)
+                        method = MonteCarloMethodCls(n_resamples=n_resamples, rng=rng_obj)
+                        res = fisher_exact_fn(table, method=method)
+                        # SciPy 返回 FisherExactResult(statistic=..., pvalue=...)
+                        p2 = f"{res.pvalue:.6g}" if hasattr(res, 'pvalue') else f"{res:.6g}"
+                    except Exception as e:
+                        log_warn(f"2x3 Monte Carlo Fisher 失败（{vid}）：{e}")
+                        p2 = "NA"
+                else:
+                    warn_msg = (warn_msg + "; " if warn_msg else "") + "RxC MonteCarloMethod 不可用（缺少新版本 SciPy），p2=NA"
+                    p2 = "NA"
+
+            # 写出一行
+            fout.write(f"{vid}\t{p1}\t{p2}\t{warn_msg}\n")
+            n_rows += 1
+
+    log_info(f"统计完成：总计 {n_rows} 个变体；警告 {n_warn} 条（2x3 未检验或使用近似）")
+    try:
+        with open(LOG_FILE, "a") as lf:
+            lf.write(f"[{_now()}][INFO] 完成 summarize_coverage_transition_significance；输出={out_summary}\n")
+            lf.write("="*72 + "\n")
+    except Exception:
+        pass
+
+    return out_summary
+
