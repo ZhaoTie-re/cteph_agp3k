@@ -1223,6 +1223,7 @@ def compute_coverage_transition_counts(
     coverage_col: str = "Target DP (JHRPv4)",
     coverage_labels: Tuple[str, str] = ("15x", "30x"),
     out_path: Optional[str] = None,
+    chrom: Optional[str] = None,
 ) -> str:
     """
     基于**已对齐行列顺序**的超大矩阵（`out_pre_order`, `out_post_order`），在
@@ -1240,7 +1241,7 @@ def compute_coverage_transition_counts(
       - 覆盖分组基于 `df_info[id_col, coverage_col]`，若某样本缺少覆盖度信息则跳过；
       - 覆盖文本先取 `|` 的第一个 token 并归一化为 `"15x"/"30x"`。
 
-    输出：写入 TSV 文件（默认与 `out_post_order` 同目录，文件名 `coverage_transitions.tsv`），
+    输出：写入 TSV 文件（默认与 `out_post_order` 同目录；若提供 `chrom`，命名为 `chr{chrom}.coverage_transitions.tsv`，否则命名为 `chrALL.coverage_transitions.tsv`），
       列为：
         ID,
         15x_0_to_missing, 15x_1_to_missing, 15x_2_to_missing, 15x_missing_to_missing,
@@ -1332,7 +1333,9 @@ def compute_coverage_transition_counts(
     n_cov_b = len(cov_idx[cov_b])
     # 输出路径与表头
     base_dir = os.path.dirname(os.path.abspath(out_post_order)) or os.getcwd()
-    out_path = out_path or os.path.join(base_dir, "coverage_transitions.tsv")
+    chrom_tag = f"chr{chrom}" if chrom else "chrALL"
+    out_path = out_path or os.path.join(base_dir, f"{chrom_tag}.coverage_transitions.tsv")
+    log_info(f"coverage 转换计数输出：{out_path}（chrom={chrom if chrom else 'ALL'}）")
     header_cols = [
         f"{cov_a}_0_to_missing", f"{cov_a}_1_to_missing", f"{cov_a}_2_to_missing", f"{cov_a}_missing_to_missing", f"{cov_a}_not_missing",
         f"{cov_b}_0_to_missing", f"{cov_b}_1_to_missing", f"{cov_b}_2_to_missing", f"{cov_b}_missing_to_missing", f"{cov_b}_not_missing",
@@ -1404,6 +1407,7 @@ def summarize_coverage_transition_significance(
     out_summary: Optional[str] = None,
     n_resamples: int = 9999,
     rng: int = 42,
+    chrom: Optional[str] = None,
 ) -> str:
     """
     基于 `compute_coverage_transition_counts()` 产出的 `coverage_transitions.tsv`，为每个变体计算三层平台敏感性检验：
@@ -1470,9 +1474,19 @@ def summarize_coverage_transition_significance(
 
     # 输出路径
     base_dir = os.path.dirname(os.path.abspath(transitions_tsv)) or os.getcwd()
-    out_summary = out_summary or os.path.join(base_dir, "stat_summary.tsv")
+    chrom_tag = f"chr{chrom}" if chrom else "chrALL"
+    out_summary = out_summary or os.path.join(base_dir, f"{chrom_tag}.stat_summary.tsv")
     with open(out_summary, "w") as fout:
-        fout.write("ID\tp_cov_L1\tp_cov_L2\tp_cov_L3\twarn_L1\twarn_L2\twarn_L3\n")
+        fout.write(
+            "ID\t"
+            "p_missing_to_missing_vs_other\t"
+            "p_not_missing_vs_drop_to_missing\t"
+            "p_genotype_drop_composition\t"
+            "warn_missing_to_missing_vs_other\t"
+            "warn_not_missing_vs_drop_to_missing\t"
+            "warn_genotype_drop_composition\n"
+        )
+    log_info(f"统计汇总输出：{out_summary}（chrom={chrom if chrom else 'ALL'}）")
 
     # 函数内工具：安全转换为整数
     def to_int(x: str) -> int:
