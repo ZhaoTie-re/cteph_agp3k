@@ -1406,15 +1406,19 @@ def summarize_coverage_transition_significance(
     rng: int = 42,
 ) -> str:
     """
-    基于 `compute_coverage_transition_counts()` 产出的 `coverage_transitions.tsv`，为每个变体计算：
-      1) 2×2 精确检验（Fisher exact，two-sided）：
-         行 = {15x, 30x}；列 = {not_missing, drop_to_missing}，其中
-         drop_to_missing = 0_to_missing + 1_to_missing + 2_to_missing。
-         结果命名为 `p_cov_2x2`。
-      2) 2×3 Fisher Monte Carlo（仅使用精确蒙特卡罗，不再使用卡方近似）：
-         行 = {15x, 30x}；列 = {0_to_missing, 1_to_missing, 2_to_missing}。
-         **若至少两列在两行合计均为 0（即该列总和为 0），则不进行检验**，记录 warn 并将 `p_cov_2x3` 置为 `NA`；
-         其余情况（允许存在为 0 的列，但不能有 ≥2 列总和为 0）则使用 `scipy.stats.fisher_exact` 的 `MonteCarloMethod` 进行检验。
+    基于 `compute_coverage_transition_counts()` 产出的 `coverage_transitions.tsv`，为每个变体计算三层平台敏感性检验：
+      L1) 2×2 精确检验（Fisher exact, two-sided）：
+          行 = {15x, 30x}；列 = {missing_to_missing, other}
+          其中 other = 0_to_missing + 1_to_missing + 2_to_missing + not_missing。
+          结果命名为 `p_cov_L1`；若成功计算则 `warn_L1` 为空，否则写入原因。
+      L2) 2×2 精确检验（Fisher exact, two-sided）：
+          行 = {15x, 30x}；列 = {not_missing, drop_to_missing}
+          其中 drop_to_missing = 0_to_missing + 1_to_missing + 2_to_missing。
+          结果命名为 `p_cov_L2`；若成功计算则 `warn_L2` 为空，否则写入原因。
+      L3) 2×3 Fisher Monte Carlo（仅使用精确蒙特卡罗，不再使用卡方近似）：
+          行 = {15x, 30x}；列 = {0_to_missing, 1_to_missing, 2_to_missing}。
+          **若至少两列在两行合计均为 0（即该列总和为 0），则不进行检验**，记录 `warn_L3` 并将 `p_cov_L3` 置为 `NA`；
+          其余情况使用 `scipy.stats.fisher_exact` 的 `MonteCarloMethod` 进行检验，成功则 `warn_L3` 为空。
 
     规模可能很大：本函数**流式逐行**读取并写出 `stat_summary.tsv`，避免将整表载入内存。
 
@@ -1452,8 +1456,8 @@ def summarize_coverage_transition_significance(
     with open(transitions_tsv, "r") as fin:
         header = fin.readline().rstrip("\n").split("\t")
     required_cols = [
-        f"{cov_a}_0_to_missing", f"{cov_a}_1_to_missing", f"{cov_a}_2_to_missing", f"{cov_a}_not_missing",
-        f"{cov_b}_0_to_missing", f"{cov_b}_1_to_missing", f"{cov_b}_2_to_missing", f"{cov_b}_not_missing",
+        f"{cov_a}_0_to_missing", f"{cov_a}_1_to_missing", f"{cov_a}_2_to_missing", f"{cov_a}_missing_to_missing", f"{cov_a}_not_missing",
+        f"{cov_b}_0_to_missing", f"{cov_b}_1_to_missing", f"{cov_b}_2_to_missing", f"{cov_b}_missing_to_missing", f"{cov_b}_not_missing",
     ]
     missing = [c for c in required_cols if c not in header]
     if missing:
@@ -1468,7 +1472,7 @@ def summarize_coverage_transition_significance(
     base_dir = os.path.dirname(os.path.abspath(transitions_tsv)) or os.getcwd()
     out_summary = out_summary or os.path.join(base_dir, "stat_summary.tsv")
     with open(out_summary, "w") as fout:
-        fout.write("ID\tp_cov_2x2\tp_cov_2x3\twarn" + "\n")
+        fout.write("ID\tp_cov_L1\tp_cov_L2\tp_cov_L3\twarn_L1\twarn_L2\twarn_L3\n")
 
     # 函数内工具：安全转换为整数
     def to_int(x: str) -> int:
@@ -1506,35 +1510,48 @@ def summarize_coverage_transition_significance(
             a0 = to_int(parts[idx[f"{cov_a}_0_to_missing"]])
             a1 = to_int(parts[idx[f"{cov_a}_1_to_missing"]])
             a2 = to_int(parts[idx[f"{cov_a}_2_to_missing"]])
+            a_mm = to_int(parts[idx[f"{cov_a}_missing_to_missing"]])
             a_keep = to_int(parts[idx[f"{cov_a}_not_missing"]])
             b0 = to_int(parts[idx[f"{cov_b}_0_to_missing"]])
             b1 = to_int(parts[idx[f"{cov_b}_1_to_missing"]])
             b2 = to_int(parts[idx[f"{cov_b}_2_to_missing"]])
+            b_mm = to_int(parts[idx[f"{cov_b}_missing_to_missing"]])
             b_keep = to_int(parts[idx[f"{cov_b}_not_missing"]])
 
-            drop_a = a0 + a1 + a2
-            drop_b = b0 + b1 + b2
-
-            # --- (1) 2x2 Fisher exact ---
-            p1 = "NA"
+            # --- (L1) 2x2 Fisher exact: missing_to_missing vs others ---
+            # other = 0_to_missing + 1_to_missing + 2_to_missing + not_missing
+            a_other = (a0 + a1 + a2 + a_keep)
+            b_other = (b0 + b1 + b2 + b_keep)
+            pL1 = "NA"; warn_L1 = ""
             try:
                 if fisher_exact_fn is not None:
-                    # 2x2 Fisher exact，two-sided
-                    _, p = fisher_exact_fn([[a_keep, drop_a], [b_keep, drop_b]], alternative='two-sided')
-                    p1 = f"{p:.6g}"
+                    _, p = fisher_exact_fn([[a_mm, a_other], [b_mm, b_other]], alternative='two-sided')
+                    pL1 = f"{p:.6g}"
                 else:
-                    p1 = "NA"
+                    warn_L1 = "scipy.stats.fisher_exact 不可用"
             except Exception as e:
-                log_warn(f"2x2 检验失败（{vid}）：{e}")
-                p1 = "NA"
+                warn_L1 = f"L1 检验失败：{e}"
 
-            # --- (2) 2x3 Fisher Monte Carlo（仅蒙特卡罗；无卡方近似） ---
-            warn_msg = ""
+            # --- (L2) 2x2 Fisher exact: not_missing vs drop_to_missing ---
+            drop_a = a0 + a1 + a2
+            drop_b = b0 + b1 + b2
+            pL2 = "NA"; warn_L2 = ""
+            try:
+                if fisher_exact_fn is not None:
+                    _, p = fisher_exact_fn([[a_keep, drop_a], [b_keep, drop_b]], alternative='two-sided')
+                    pL2 = f"{p:.6g}"
+                else:
+                    warn_L2 = "scipy.stats.fisher_exact 不可用"
+            except Exception as e:
+                warn_L2 = f"L2 检验失败：{e}"
+
+            # --- (L3) 2x3 Fisher Monte Carlo（仅蒙特卡罗；无卡方近似） ---
+            warn_L3 = ""
             cols_sum = [a0 + b0, a1 + b1, a2 + b2]
             zero_cols = sum(1 for s in cols_sum if s == 0)
-            p2 = "NA"
+            pL3 = "NA"
             if zero_cols >= 2:
-                warn_msg = (
+                warn_L3 = (
                     "2x3 跳过：至少两列总和为0，信息不足；counts="
                     f"{{0:{(a0,b0)}, 1:{(a1,b1)}, 2:{(a2,b2)}}}"
                 )
@@ -1547,20 +1564,17 @@ def summarize_coverage_transition_significance(
                         rng_obj = _np.random.default_rng(rng)
                         method = MonteCarloMethodCls(n_resamples=n_resamples, rng=rng_obj)
                         res = fisher_exact_fn(table, method=method)
-                        # SciPy 返回 FisherExactResult(statistic=..., pvalue=...)
-                        p2 = f"{res.pvalue:.6g}" if hasattr(res, 'pvalue') else f"{res:.6g}"
+                        pL3 = f"{res.pvalue:.6g}" if hasattr(res, 'pvalue') else f"{res:.6g}"
                     except Exception as e:
-                        log_warn(f"2x3 Monte Carlo Fisher 失败（{vid}）：{e}")
-                        p2 = "NA"
+                        warn_L3 = f"L3 Monte Carlo 失败：{e}"
                 else:
-                    warn_msg = (warn_msg + "; " if warn_msg else "") + "RxC MonteCarloMethod 不可用（缺少新版本 SciPy），p2=NA"
-                    p2 = "NA"
+                    warn_L3 = "RxC MonteCarloMethod 不可用（缺少新版本 SciPy），pL3=NA"
 
             # 写出一行
-            fout.write(f"{vid}\t{p1}\t{p2}\t{warn_msg}\n")
+            fout.write(f"{vid}\t{pL1}\t{pL2}\t{pL3}\t{warn_L1}\t{warn_L2}\t{warn_L3}\n")
             n_rows += 1
 
-    log_info(f"统计完成：总计 {n_rows} 个变体；警告 {n_warn} 条（2x3 未检验或使用近似）")
+    log_info(f"统计完成：总计 {n_rows} 个变体；警告 {n_warn} 条（2x3 未检验或蒙特卡罗失败）")
     try:
         with open(LOG_FILE, "a") as lf:
             lf.write(f"[{_now()}][INFO] 完成 summarize_coverage_transition_significance；输出={out_summary}\n")
