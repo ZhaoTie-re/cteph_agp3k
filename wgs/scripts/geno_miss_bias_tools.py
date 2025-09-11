@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import shlex
 from typing import Tuple, Optional, List, Dict, Any
 
 import pandas as pd
@@ -746,20 +747,75 @@ def harmonize_gt_matrices(
         return True
 
     def _sort_by_pos(path: str, out_path: str):
-        tmp = out_path + ".tmp"
-        # 方案：首行单独写出；其余行前置 POS 做数字排序，再去掉前缀
-        cmd = (
-            "bash -lc "
-            + repr(
-                "{ head -n1 " + path +
-                " ; tail -n +2 " + path +
-                " | awk -F '\\t' '{split($1,a,\":\"); print a[2]\\t$0}'"
-                " | LC_ALL=C sort -t $'\\t' -k1,1n"
-                " | cut -f2- ; } > " + tmp
-            )
-        )
-        _run_cmd(cmd)
-        os.replace(tmp, out_path)
+        tmp_body_pref = out_path + ".bodypref.tmp"
+        tmp_body_sorted = out_path + ".bodysorted.tmp"
+        tmp_out = out_path + ".tmp"
+        # 1) Python 流式：为每行前置 POS（无法解析则置 999999999），避免 awk 在超长行/引号上的不确定性
+        total = 0
+        with open(path, "r") as fin, open(tmp_body_pref, "w") as fpref:
+            header_line = fin.readline()  # 仅读取一次表头
+            for line in fin:
+                if not line:
+                    continue
+                s = line.rstrip("\r\n")
+                if not s:
+                    continue
+                # 提取首列 ID 的 POS
+                try:
+                    first_tab = s.find("\t")
+                    idv = s if first_tab == -1 else s[:first_tab]
+                    pos_str = idv.split(":", 2)[1]
+                    pos = int(pos_str)
+                except Exception:
+                    pos = 999_999_999
+                fpref.write(f"{pos}\t{s}\n")
+                total += 1
+        log_info(f"[POS-SORT] 需要排序的主体行数（不含表头）={total}")
+        if total == 0:
+            # 主体为空：直接复制并返回
+            log_warn("[POS-SORT] 主体行为 0，排序无意义：保留原文件")
+            if path != out_path:
+                shutil.copyfile(path, out_path)
+            return
+
+        # 2) 用 GNU sort 对前置 POS 做数值排序
+        qpref = shlex.quote(tmp_body_pref)
+        qsorted = shlex.quote(tmp_body_sorted)
+        _run_cmd(f"bash -lc \"LC_ALL=C sort -t $'\\t' -k1,1n {qpref} > {qsorted}\"")
+
+        # 3) 合并表头 + 排序后的主体，并去掉临时 POS 列
+        with open(tmp_out, "w") as fout, open(path, "r") as fin_h, open(tmp_body_sorted, "r") as fsorted:
+            # 输出表头原样
+            fout.write(fin_h.readline())
+            # 输出主体：去掉前缀 POS 列
+            out_rows = 0
+            for row in fsorted:
+                tab = row.find("\t")
+                if tab != -1:
+                    fout.write(row[tab+1:])
+                else:
+                    # 理论兜底：保留整行
+                    fout.write(row)
+                out_rows += 1
+        log_info(f"[POS-SORT] 排序后主体行数（不含表头）={out_rows}")
+
+        # 4) 行数一致性校验：排序前（含表头） vs 排序后（含表头）
+        try:
+            c1 = int(subprocess.check_output(['bash','-lc', f"wc -l < {shlex.quote(path)}"], text=True).strip())
+            c2 = int(subprocess.check_output(['bash','-lc', f"wc -l < {shlex.quote(tmp_out)}"], text=True).strip())
+            if c1 != c2:
+                log_warn(f"POS 排序前后行数不一致：原始={c1}，排序后={c2}。保留未排序版本作为输出；排序结果保留：{tmp_out}")
+                return
+        except Exception as e:
+            log_warn(f"排序后行数校验失败：{e}")
+
+        os.replace(tmp_out, out_path)
+        # 清理临时文件
+        for _p in (tmp_body_pref, tmp_body_sorted):
+            try:
+                os.remove(_p)
+            except Exception:
+                pass
         log_info(f"已按 POS 升序排序：{out_path}")
 
     def _reorder_stream(in_path: str, out_path: str, desired_cols: List[str]):

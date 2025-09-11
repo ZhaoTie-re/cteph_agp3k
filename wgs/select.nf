@@ -800,34 +800,3 @@ process CovPhenoPrepare {
     """
 }
 
-process MissBiasFilter {
-    executor 'slurm'
-    queue 'gr10478b'
-    time '36h'
-    tag "MissBiasFilter"
-
-    publishDir "${params.outdir}/21.miss_bias_filter", mode: 'symlink'
-
-    input:
-    tuple file(bed), file(bim), file(fam) from lowfreq_common_out
-
-    output:
-    file('*.png')
-    file('*.log')
-    file('*.missing')
-    tuple file('*.bed'), file('*.bim'), file('*.fam') into miss_bias_out
-
-    script:
-    bed_prefix = bed.baseName
-    """
-    source activate cteph_geno_pro
-    python ${params.scriptDir}/miss_bias_main.py \
-        --bed_prefix ${bed_prefix} \
-        --out_prefix_run "cteph_agp3k.missing_bias" \
-        --use_midp \
-        --color_by_variant \
-        --fdr_threshold 0.05 \
-        --threads 32 \
-        --out_prefix_remove "cteph_agp3k.lowfreq_common.rm_q_lt_0.05"
-    """
-}
