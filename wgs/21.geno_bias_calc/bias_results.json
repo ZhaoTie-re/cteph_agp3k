@@ -1,0 +1,114 @@
+{
+    "bias_results": [
+        {
+            "chr": "chr3",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/32/2435e97a0bffbf5f7c2c1e661175c2/chr3.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/32/2435e97a0bffbf5f7c2c1e661175c2/chr3.stat_summary.tsv"
+        },
+        {
+            "chr": "chr2",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/2f/fc96a8850649cc79d7ed62851a9d05/chr2.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/2f/fc96a8850649cc79d7ed62851a9d05/chr2.stat_summary.tsv"
+        },
+        {
+            "chr": "chr1",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/a0/876ec7fa4cc4b76df6907928e56a59/chr1.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/a0/876ec7fa4cc4b76df6907928e56a59/chr1.stat_summary.tsv"
+        },
+        {
+            "chr": "chr4",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/36/15b336c08848115918d35941ac00ba/chr4.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/36/15b336c08848115918d35941ac00ba/chr4.stat_summary.tsv"
+        },
+        {
+            "chr": "chr5",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/b5/1bc4a6ff5b231e59f2b6e469b12269/chr5.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/b5/1bc4a6ff5b231e59f2b6e469b12269/chr5.stat_summary.tsv"
+        },
+        {
+            "chr": "chr6",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/62/00fd078f98f3a26eb0efad2faa70b9/chr6.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/62/00fd078f98f3a26eb0efad2faa70b9/chr6.stat_summary.tsv"
+        },
+        {
+            "chr": "chr7",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/fe/39eccacb956459abd025b17b8e16d6/chr7.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/fe/39eccacb956459abd025b17b8e16d6/chr7.stat_summary.tsv"
+        },
+        {
+            "chr": "chr8",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/f1/7a302123bbf609a8f438b365de4eaf/chr8.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/f1/7a302123bbf609a8f438b365de4eaf/chr8.stat_summary.tsv"
+        },
+        {
+            "chr": "chr9",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/2e/160587bee8a0679ce9b20a1b80e279/chr9.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/2e/160587bee8a0679ce9b20a1b80e279/chr9.stat_summary.tsv"
+        },
+        {
+            "chr": "chr11",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/18/97c4d8bedbfe13e329010624032ca3/chr11.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/18/97c4d8bedbfe13e329010624032ca3/chr11.stat_summary.tsv"
+        },
+        {
+            "chr": "chr12",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/10/c4df5179557dcf6640dc14ddbc55a3/chr12.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/10/c4df5179557dcf6640dc14ddbc55a3/chr12.stat_summary.tsv"
+        },
+        {
+            "chr": "chr10",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/81/9510f6af0195c58d11af22922f7f64/chr10.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/81/9510f6af0195c58d11af22922f7f64/chr10.stat_summary.tsv"
+        },
+        {
+            "chr": "chr13",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/de/bf7371d284213582c4a1240898f1f6/chr13.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/de/bf7371d284213582c4a1240898f1f6/chr13.stat_summary.tsv"
+        },
+        {
+            "chr": "chr14",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/79/a532417d2ad69bc6a223225904807e/chr14.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/79/a532417d2ad69bc6a223225904807e/chr14.stat_summary.tsv"
+        },
+        {
+            "chr": "chr15",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/4f/9057282c06c8d6e400a9dccb345e5a/chr15.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/4f/9057282c06c8d6e400a9dccb345e5a/chr15.stat_summary.tsv"
+        },
+        {
+            "chr": "chr16",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/0b/649a6810cad9e803d16062d221eb2e/chr16.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/0b/649a6810cad9e803d16062d221eb2e/chr16.stat_summary.tsv"
+        },
+        {
+            "chr": "chr17",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/f7/c1ee16ef51ba904dee97dcd291b983/chr17.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/f7/c1ee16ef51ba904dee97dcd291b983/chr17.stat_summary.tsv"
+        },
+        {
+            "chr": "chr18",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/46/bb1d6ea0f2846ae8ddbafc4d2e55a1/chr18.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/46/bb1d6ea0f2846ae8ddbafc4d2e55a1/chr18.stat_summary.tsv"
+        },
+        {
+            "chr": "chr19",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/78/36c9fffa9540144fac079b55b2f7a6/chr19.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/78/36c9fffa9540144fac079b55b2f7a6/chr19.stat_summary.tsv"
+        },
+        {
+            "chr": "chr20",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/91/5df1e104e6ef510d3fd3307aa24346/chr20.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/91/5df1e104e6ef510d3fd3307aa24346/chr20.stat_summary.tsv"
+        },
+        {
+            "chr": "chr21",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/54/5e5fe648be8867e7ee3c3ef765f9de/chr21.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/54/5e5fe648be8867e7ee3c3ef765f9de/chr21.stat_summary.tsv"
+        },
+        {
+            "chr": "chr22",
+            "coverage_transitions": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/cc/1fc21fefa21b828243632003d49b01/chr22.coverage_transitions.tsv",
+            "stat_summary": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/work/cc/1fc21fefa21b828243632003d49b01/chr22.stat_summary.tsv"
+        }
+    ]
+}

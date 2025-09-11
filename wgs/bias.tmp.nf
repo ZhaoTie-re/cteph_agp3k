@@ -44,3 +44,34 @@ process BiasCalculation {
         --keep-temp
     """
 }
+
+// 将 (chr, cov, sum) 每条元组映射为 Map，再一次性收集为 List，并在 channel 层生成 JSON 字符串
+bias_result_ch
+    .map { the_chr, cov, sum -> [
+        chr: the_chr.toString(),
+        coverage_transitions: cov.toString(),
+        stat_summary: sum.toString()
+    ] }
+    .collect()
+    .map { entries -> groovy.json.JsonOutput.prettyPrint(groovy.json.JsonOutput.toJson([bias_results: entries])) }
+    .set { bias_results_json_text_ch }
+
+process BiasResultsToJson {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '1h'
+    tag 'bias_json'
+
+    publishDir "${params.outDir}/21.geno_bias_calc", mode: 'copy'
+
+    input:
+    val(json_text) from bias_results_json_text_ch
+
+    output:
+    file('bias_results.json') into bias_results_json_ch
+
+    script:
+    """
+    echo '${json_text}' > bias_results.json
+    """
+}

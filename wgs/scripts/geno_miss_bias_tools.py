@@ -1654,3 +1654,160 @@ def summarize_coverage_transition_significance(
 
     return out_summary
 
+
+
+# new function based on bias_results.json
+def merge_bias_results_json(
+    json_path: str,
+    out_dir: Optional[str] = None,
+    out_prefix: str = "all",
+) -> Dict[str, str]:
+    """
+    合并 bias_results.json 中各染色体的结果文件，并产出新的汇总 JSON。
+
+    输入：
+      json_path : 由流程产出的 bias_results.json 路径。支持两种结构：
+                  1) {"bias_results": [ { "chr": "chr1", "coverage_transitions": "...", "stat_summary": "..." }, ... ]}
+                  2) [ { "chr": "chr1", "coverage_transitions": "...", "stat_summary": "..." }, ... ]
+      out_dir   : （已忽略）输出目录强制为 **当前 Python 工作目录** `os.getcwd()`，便于在工作目录直接收集产物
+      out_prefix: 合并结果文件名前缀（默认 "all"），将生成：
+                  - <cwd>/<out_prefix>.coverage_transitions.tsv
+                  - <cwd>/<out_prefix>.stat_summary.tsv
+                  - <cwd>/bias_results.merged.json
+
+    行为：
+      - 按 chr1→chr22 的**自然顺序**进行拼接；
+      - 仅第一个文件保留表头，后续文件跳过表头；
+      - 流式拼接，避免大内存；
+      - 生成新的 JSON，记录合并文件路径、包含的染色体列表和源 JSON 路径。
+
+    返回：
+      dict，包含：
+        {
+          "merged_coverage_transitions": "<path>",
+          "merged_stat_summary": "<path>",
+          "merged_json": "<path>"
+        }
+    """
+    assert os.path.exists(json_path), f"json file not found: {json_path}"
+
+    # 解析 JSON
+    import json as _json
+    with open(json_path, "r") as f:
+        try:
+            data = _json.load(f)
+        except Exception as e:
+            log_err(f"读取 JSON 失败：{e}")
+            raise
+
+    # 兼容两种顶层结构
+    if isinstance(data, dict) and "bias_results" in data and isinstance(data["bias_results"], list):
+        items = data["bias_results"]
+    elif isinstance(data, list):
+        items = data
+    else:
+        log_err("JSON 结构不符合预期：应为对象含 bias_results 列表或顶层为列表")
+        raise ValueError("Unexpected JSON structure for bias_results")
+
+    # 规范输出目录：强制使用当前 Python 工作目录
+    out_dir = os.getcwd()
+    _ensure_dir(out_dir)
+    log_info(f"输出目录已固定为当前工作目录：{out_dir}")
+
+    # 目标输出路径
+    out_cov = os.path.join(out_dir, f"{out_prefix}.coverage_transitions.tsv")
+    out_sum = os.path.join(out_dir, f"{out_prefix}.stat_summary.tsv")
+    out_json = os.path.join(out_dir, "bias_results.merged.json")
+
+    # 记录日志
+    log_info(f"开始合并 bias_results：源={json_path}")
+    log_info(f"输出：coverage_transitions={out_cov}；stat_summary={out_sum}；json={out_json}")
+
+    # 去重并按 chr1..chr22 排序
+    def _chr_key(c: str) -> int:
+        # 提取数字部分，无法解析则置为 1e9 以排在末尾
+        import re
+        s = str(c)
+        m = re.search(r'(\d+)$', s)
+        return int(m.group(1)) if m else 10**9
+
+    seen = set()
+    by_chr: Dict[str, Dict[str, str]] = {}
+    for it in items:
+        try:
+            c = it["chr"]
+            cov = it["coverage_transitions"]
+            summ = it["stat_summary"]
+        except Exception:
+            log_warn(f"条目缺失关键键，将跳过：{it}")
+            continue
+        if c in seen:
+            log_warn(f"检测到重复染色体 {c}，仅保留首次出现的路径")
+            continue
+        seen.add(c)
+        by_chr[c] = {"coverage": cov, "summary": summ}
+
+    # 仅保留 chr1..chr22
+    wanted = [f"chr{i}" for i in range(1, 23)]
+    present = [c for c in wanted if c in by_chr]
+    missing = [c for c in wanted if c not in by_chr]
+    if missing:
+        log_warn(f"以下染色体在 JSON 中缺失：{', '.join(missing)}")
+    log_info(f"将按以下顺序拼接：{', '.join(present)}")
+
+    # 工具：按顺序拼接 TSV（仅首个保留表头）
+    def _concat_tsv_ordered(paths: List[str], out_path: str):
+        n_written = 0
+        with open(out_path, "w") as fout:
+            for i, pth in enumerate(paths):
+                if not os.path.exists(pth):
+                    log_warn(f"文件不存在，跳过：{pth}")
+                    continue
+                if os.path.getsize(pth) == 0:
+                    log_warn(f"文件为空，跳过：{pth}")
+                    continue
+                with open(pth, "r") as fin:
+                    for j, line in enumerate(fin):
+                        if i > 0 and j == 0:
+                            continue  # 跳过表头
+                        fout.write(line)
+                        n_written += 1
+        return n_written
+
+    # 按序列出两个类型的文件清单
+    cov_files = [by_chr[c]["coverage"] for c in present]
+    sum_files = [by_chr[c]["summary"] for c in present]
+
+    # 拼接
+    nw_cov = _concat_tsv_ordered(cov_files, out_cov)
+    nw_sum = _concat_tsv_ordered(sum_files, out_sum)
+    log_info(f"拼接完成：coverage_transitions 写入 {nw_cov} 行；stat_summary 写入 {nw_sum} 行")
+
+    # 生成新的 JSON
+    import json as _json2
+    merged_obj = {
+        "source_json": os.path.abspath(json_path),
+        "chromosomes": present,
+        "merged": {
+            "coverage_transitions": os.path.abspath(out_cov),
+            "stat_summary": os.path.abspath(out_sum),
+        }
+    }
+    try:
+        with open(out_json, "w") as jf:
+            _json2.dump(merged_obj, jf, ensure_ascii=False, indent=2)
+        log_info(f"已写出汇总 JSON：{out_json}")
+    except Exception as e:
+        log_err(f"写出汇总 JSON 失败：{e}")
+        raise
+
+    # 确保返回绝对路径
+    out_cov = os.path.abspath(out_cov)
+    out_sum = os.path.abspath(out_sum)
+    out_json = os.path.abspath(out_json)
+    return {
+        "merged_coverage_transitions": out_cov,
+        "merged_stat_summary": out_sum,
+        "merged_json": out_json,
+    }
+
