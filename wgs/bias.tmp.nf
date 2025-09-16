@@ -119,4 +119,26 @@ PY
     """
 }
 
+process BiasResultsFDRCorrection {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '2h'
+    tag 'bias_fdr_correction'
 
+    publishDir "${params.outDir}/22.geno_bias_corr", mode: 'symlink'
+
+    input:
+    file(merged_json) from merged_bias_results_json_ch
+
+    output:
+    file('*.log')
+    file('*.tsv')
+
+    script:
+    """
+    source activate compute_env
+    python ${params.scriptDir}/geno_miss_bias_cor_main.py \
+        -i ${merged_json} \
+        -o bias_results.fdr.tsv
+    """
+}
