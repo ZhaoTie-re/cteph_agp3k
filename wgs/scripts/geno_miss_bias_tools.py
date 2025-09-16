@@ -1656,7 +1656,6 @@ def summarize_coverage_transition_significance(
 
 
 
-# new function based on bias_results.json
 def merge_bias_results_json(
     json_path: str,
     out_dir: Optional[str] = None,
@@ -1810,4 +1809,185 @@ def merge_bias_results_json(
         "merged_stat_summary": out_sum,
         "merged_json": out_json,
     }
+
+
+def adjust_stat_summary_fdr(
+    merged_json_path: str,
+    out_path: Optional[str] = None,
+    pcols: Tuple[str, str, str] = (
+        "p_missing_to_missing_vs_other",
+        "p_not_missing_vs_drop_to_missing",
+        "p_genotype_drop_composition",
+    ),
+    float_fmt: str = ".6g",
+) -> str:
+    """
+    基于合并 JSON（由 `merge_bias_results_json()` 产出）的 `stat_summary` 路径，
+    对三个 p 值列分别执行 Benjamini–Hochberg (BH/FDR) 矫正，并将校正后的 q 值
+    作为新列写回一个新的 TSV。
+
+    参数
+    ----
+    merged_json_path : str
+        `bias_results.merged.json` 的路径。其 JSON 结构需包含：
+        {
+          "merged": { "stat_summary": "/path/to/all.stat_summary.tsv", ... },
+          ...
+        }
+    out_path : Optional[str]
+        输出 TSV 路径；默认在 `stat_summary` 同目录、文件名追加后缀 `.fdr.tsv`。
+    pcols : Tuple[str, str, str]
+        需校正的三列名称，默认：
+          - "p_missing_to_missing_vs_other"
+          - "p_not_missing_vs_drop_to_missing"
+          - "p_genotype_drop_composition"
+    float_fmt : str
+        输出数值格式（传给 f-string，如 ".6g"）。
+
+    行为
+    ----
+    * 对每一列 **独立** 进行 BH 校正；
+    * 无法解析为浮点的值（如 "NA"/"na"/空）**不参与**校正，同时在输出中原样回填；
+    * 为避免内存溢出，采用“两遍扫描”并**流式写出**结果：
+        - 第1遍：仅收集可用 p 值，完成每列的 BH 校正，构建“原始 token → 按升序出现的校正值队列”的映射；
+        - 第2遍：逐行读取原始文件，遇到可用 p 值则从对应队列**弹出**一个校正值写出，否则原样写出无效 token。
+
+    返回
+    ----
+    str : 新的带 FDR 列的 stat_summary 路径。
+    """
+    assert os.path.exists(merged_json_path), f"merged json not found: {merged_json_path}"
+
+    # 初始化日志文件（若尚未设置）
+    global LOG_FILE
+    if LOG_FILE is None:
+        try:
+            base_dir = os.getcwd()
+        except Exception:
+            base_dir = "."
+        LOG_FILE = os.path.join(base_dir, "geno_miss_bias.fdr.log")
+        try:
+            with open(LOG_FILE, "a") as lf:
+                lf.write("="*72 + "\n")
+                lf.write(f"[{_now()}][INFO] 开始执行 adjust_stat_summary_fdr\n")
+                lf.write(f"[{_now()}][INFO] merged_json_path={merged_json_path}\n")
+        except Exception:
+            pass
+    log_info(f"日志文件：{LOG_FILE}")
+
+    # 读取 JSON，获取 stat_summary 路径
+    import json as _json
+    with open(merged_json_path, "r") as jf:
+        data = _json.load(jf)
+    try:
+        stat_summary_path = data["merged"]["stat_summary"]
+    except Exception:
+        log_err("合并 JSON 中缺少 merged.stat_summary 路径")
+        raise KeyError("merged.stat_summary missing")
+
+    assert os.path.exists(stat_summary_path), f"stat_summary not found: {stat_summary_path}"
+
+    # 输出路径：默认写在当前工作目录
+    if out_path is None:
+        base_dir = os.getcwd()
+        root, ext = os.path.splitext(os.path.basename(stat_summary_path))
+        out_path = os.path.join(base_dir, root + ".fdr.tsv")
+    log_info(f"输入 stat_summary：{stat_summary_path}")
+    log_info(f"输出（带 FDR）：{out_path}")
+
+    # 解析表头，定位列索引
+    with open(stat_summary_path, "r") as fin:
+        header = fin.readline().rstrip("\n").split("\t")
+    missing_cols = [c for c in pcols if c not in header]
+    if missing_cols:
+        log_err(f"stat_summary 缺少必要 p 列：{missing_cols}")
+        raise KeyError(f"Missing p columns: {missing_cols}")
+    pidx = tuple(header.index(c) for c in pcols)
+
+    # 工具：数字解析（严格 0-1 也可放宽，这里仅作 float 解析）
+    def _parse_p(tok: str):
+        if tok is None:
+            return None, False
+        s = tok.strip()
+        if s == "" or s.lower() in ("na", "nan", "null", "."):
+            return None, False
+        try:
+            v = float(s)
+            if not (v >= 0.0 and v <= 1.0):
+                # 超界 p 值视作无效
+                return None, False
+            return v, True
+        except Exception:
+            return None, False
+
+    # 第一遍：收集各列的可用 p 值（按**出现顺序**记录），为 FDR 做准备
+    import numpy as _np
+    col_vals = [[], [], []]  # 每列一个列表，按出现顺序追加 float p
+
+    with open(stat_summary_path, "r") as fin:
+        _ = fin.readline()  # 跳过表头
+        for line in fin:
+            if not line:
+                continue
+            parts = line.rstrip("\n").split("\t")
+            for ci, pi in enumerate(pidx):
+                tok = parts[pi] if pi < len(parts) else ""
+                v, ok = _parse_p(tok)
+                if ok:
+                    col_vals[ci].append(float(v))
+
+    # 使用 SciPy 的 BH/FDR（Benjamini–Hochberg）实现
+    try:
+        from scipy import stats as _stats
+    except Exception as e:
+        log_err(f"无法导入 scipy.stats.false_discovery_control：{e}")
+        raise
+
+    # 对三列分别独立校正；返回值顺序与输入 p 顺序一致
+    qvals_list = []
+    for ci in range(3):
+        if len(col_vals[ci]) == 0:
+            qvals_list.append(_np.array([], dtype=float))
+        else:
+            try:
+                qv = _stats.false_discovery_control(_np.asarray(col_vals[ci], dtype=float), method='bh')
+            except TypeError:
+                # 兼容较老的 SciPy（某些版本需要 keyword `method` 或不支持）；如失败则报错
+                log_err("当前 SciPy 版本不支持 stats.false_discovery_control(method='bh')，请升级 SciPy ≥ 1.11")
+                raise
+            qvals_list.append(_np.asarray(qv, dtype=float))
+
+    # 为第二遍输出准备按出现顺序的队列（deque），遇到一个可用 p 就弹出一个对应的 q
+    from collections import deque
+    q_deques = [deque(qvals_list[0].tolist()), deque(qvals_list[1].tolist()), deque(qvals_list[2].tolist())]
+
+    # 第二遍：逐行写出，追加 3 列 FDR（无效 token 原样回填）
+    fdr_headers = [c.replace("p_", "fdr_") for c in pcols]
+    with open(out_path, "w") as fout, open(stat_summary_path, "r") as fin:
+        # 写表头
+        hdr = fin.readline().rstrip("\n")
+        fout.write(hdr + "\t" + "\t".join(fdr_headers) + "\n")
+        # 逐行
+        for line in fin:
+            if not line:
+                continue
+            parts = line.rstrip("\n").split("\t")
+            fdr_out = []
+            for ci, pi in enumerate(pidx):
+                tok = parts[pi] if pi < len(parts) else ""
+                v, ok = _parse_p(tok)
+                if ok:
+                    if q_deques[ci]:
+                        q = q_deques[ci].popleft()
+                        fdr_out.append(format(float(q), float_fmt))
+                    else:
+                        # 意外：队列已空，保底写回原始 p
+                        fdr_out.append(tok)
+                else:
+                    fdr_out.append(tok)
+            # 写行
+            fout.write("\t".join(parts + fdr_out) + "\n")
+
+    log_info("BH/FDR 校正完成并写出新文件")
+    return out_path
 

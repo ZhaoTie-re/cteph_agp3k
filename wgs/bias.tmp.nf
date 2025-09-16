@@ -45,7 +45,6 @@ process BiasCalculation {
     """
 }
 
-// 将 (chr, cov, sum) 每条元组映射为 Map，再一次性收集为 List，并在 channel 层生成 JSON 字符串
 bias_result_ch
     .map { the_chr, cov, sum -> [
         chr: the_chr.toString(),
@@ -75,3 +74,49 @@ process BiasResultsToJson {
     echo '${json_text}' > bias_results.json
     """
 }
+
+
+process MergeBiasResultsJson {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '2h'
+    tag 'merge_bias_json'
+
+    publishDir "${params.outDir}/22.geno_bias_corr", mode: 'symlink'
+
+    input:
+    file(json_file) from bias_results_json_ch
+    val(scriptDir) from params.scriptDir
+
+    output:
+    file('all.coverage_transitions.tsv')
+    file('all.stat_summary.tsv')
+    file('bias_results.merged.json') into merged_bias_results_json_ch
+
+    script:
+    """
+    source activate compute_env
+    export JSON_PATH="${json_file}"
+    export SCRIPT_DIR="${scriptDir}"
+    python - <<'PY'
+import os, sys, importlib
+# 将脚本目录加入 sys.path（来自环境变量，避免 Nextflow 字符串插值）
+script_path = os.path.abspath(os.environ['SCRIPT_DIR'])
+if script_path not in sys.path:
+    sys.path.append(script_path)
+
+import geno_miss_bias_tools
+importlib.reload(geno_miss_bias_tools)
+from geno_miss_bias_tools import merge_bias_results_json
+
+json_path = os.environ['JSON_PATH']
+# 在当前工作目录输出合并结果（函数内部已固定输出到 CWD）
+ret = merge_bias_results_json(json_path, out_prefix="all")
+print("[INFO] merged_coverage_transitions=", ret.get("merged_coverage_transitions"))
+print("[INFO] merged_stat_summary=", ret.get("merged_stat_summary"))
+print("[INFO] merged_json=", ret.get("merged_json"))
+PY
+    """
+}
+
+
