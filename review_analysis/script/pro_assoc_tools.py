@@ -1,3 +1,33 @@
+"""
+蛋白质关联分析工具集
+
+本模块提供用于CTEPH研究中基因型-蛋白质表达关联分析的工具函数，包括：
+
+主要功能模块：
+1. PLINK基因型数据处理
+   - export_plink_geno_matrix: 从PLINK二进制文件导出基因型矩阵
+   - summarize_gt_counts: 统计基因型计数信息
+
+2. 变体-基因-蛋白质数据整合
+   - assemble_variant_gene_protein_table: 整合变体、基因和蛋白质数据
+
+3. 蛋白质表达可视化分析
+   - plot_protein_boxplot_per_variant: 生成按变体分组的蛋白质表达箱线图
+
+4. 辅助工具函数
+   - 数据清洗和标准化函数
+   - 统计分析函数
+   - 图表渲染函数
+
+依赖软件：
+- PLINK2: 用于基因型数据处理
+- bcftools: 用于VCF文件操作
+- pandas, numpy, matplotlib, seaborn: 数据分析和可视化
+
+作者：ZHAO TIE
+最后更新：2025年9月
+"""
+
 import os
 import sys
 import shutil
@@ -9,13 +39,14 @@ from typing import Tuple, Optional, List, Dict, Any
 
 import pandas as pd
 
-# Default paths for plink2 and bcftools
+# PLINK2和bcftools的默认路径配置
 DEFAULT_PLINK2 = "/home/b/b37974/plink2"
 DEFAULT_BCFTOOLS = "/home/b/b37974/bcftools/bcftools"
 
-# ---- Shared helper functions for external tool execution ----
+# ---- 外部工具执行的共享辅助函数 ----
 
 def _log_info(msg: str):
+    """记录信息级别的日志消息。优先使用全局log_info函数，否则输出到stderr。"""
     if "log_info" in globals() and callable(globals()["log_info"]):
         globals()["log_info"](msg)
     else:
@@ -23,6 +54,7 @@ def _log_info(msg: str):
         print(f"[INFO] {msg}", file=sys.stderr, flush=True)
 
 def _log_warn(msg: str):
+    """记录警告级别的日志消息。优先使用全局log_warn函数，否则输出到stderr。"""
     if "log_warn" in globals() and callable(globals()["log_warn"]):
         globals()["log_warn"](msg)
     else:
@@ -30,7 +62,18 @@ def _log_warn(msg: str):
         print(f"[WARN] {msg}", file=sys.stderr, flush=True)
 
 def _run(cmd):
-    """Run external command with fallback if _run_cmd not available globally."""
+    """
+    执行外部命令的通用函数。
+    
+    优先使用全局_run_cmd函数，如果不可用则使用subprocess作为备用方案。
+    如果命令执行失败，会抛出RuntimeError异常并包含错误信息。
+    
+    参数：
+        cmd: 要执行的命令，可以是字符串或列表格式
+        
+    返回：
+        subprocess.CompletedProcess对象（当使用备用方案时）
+    """
     if "_run_cmd" in globals() and callable(globals()["_run_cmd"]):
         return globals()["_run_cmd"](cmd)
     if isinstance(cmd, (list, tuple)):
@@ -48,6 +91,14 @@ def _run(cmd):
     return ret
 
 def _ensure(path: str):
+    """
+    确保指定目录存在。
+    
+    优先使用全局_ensure_dir函数，如果不可用则使用os.makedirs作为备用方案。
+    
+    参数：
+        path: 要创建的目录路径
+    """
     if "_ensure_dir" in globals() and callable(globals()["_ensure_dir"]):
         return globals()["_ensure_dir"](path)
     import os
@@ -460,25 +511,57 @@ def summarize_gt_counts(
     print_preview: bool = True,
 ) -> str:
     """
-    根据基因型矩阵（TSV；首列为 ID，其余列为样本；值为 '0','1','2','.'）汇总每个变体的
-    GT=0/1/2/.(缺失) 的计数，并写出一个按行对齐的汇总表。
-
+    统计基因型矩阵中每个变体的基因型分布。
+    
+    从基因型矩阵（TSV格式）中统计每个变体的GT=0/1/2/缺失的样本数量，
+    生成按行对齐的汇总表格。支持大文件的分块处理以节省内存。
+    
     参数
     ----
     gt_tsv_path : str
-        输入的基因型矩阵（由 export_plink_geno_matrix 生成）
-    out_path : str | None
-        输出汇总 TSV 路径。若未提供，默认与输入同目录，文件名为 `<basename>.gt_summary.tsv`
-    chunksize : int
-        分块读取的行数（防止整表过大导致内存压力）
-    preview_n : int
-        打印预览的行数（notebook 中便于快速查看）
-    print_preview : bool
-        是否打印前 preview_n 行到 stderr（notebook 里也会展示）
-
+        输入的基因型矩阵文件路径（由export_plink_geno_matrix生成）。
+        格式：第一列为变体ID，其余列为样本，值为'0'/'1'/'2'/'.'
+        
+    out_path : str, optional
+        输出汇总文件路径。如果未指定，将在输入文件同目录下生成
+        `<basename>.gt_summary.tsv`文件。
+        
+    chunksize : int, default=5000
+        分块读取的行数，用于处理大文件时控制内存使用。
+        
+    preview_n : int, default=10
+        预览显示的行数，便于在notebook中快速查看结果。
+        
+    print_preview : bool, default=True
+        是否将前preview_n行打印到stderr（在notebook中也会显示）。
+        
     返回
     ----
-    str : 输出汇总文件路径
+    str
+        输出汇总文件的路径。
+        
+    输出格式
+    --------
+    生成的TSV文件包含以下列：
+    - ID: 变体标识符
+    - n0: 基因型为0的样本数量
+    - n1: 基因型为1的样本数量  
+    - n2: 基因型为2的样本数量
+    - nmiss: 缺失基因型('.')的样本数量
+    - ncalled: 有效基因型的样本数量（nsamples - nmiss）
+    - nsamples: 总样本数量
+    
+    使用场景
+    --------
+    - 质量控制：检查各变体的基因型分布
+    - 预筛选：识别适合特定遗传模型分析的变体
+    - 统计报告：生成基因型分布摘要
+    
+    性能优化
+    --------
+    - 使用向量化计算提高处理速度
+    - 分块读取避免大文件内存溢出
+    - 追加写入模式处理超大数据集
     """
     import os
     import pandas as pd
@@ -559,17 +642,65 @@ def assemble_variant_gene_protein_table(
     print_preview: bool = True,
 ) -> str:
     """
-    根据 variant_ids（一般为 CHROM:POS:REF:ALT），整合 GWAS 与 protein apt 表，输出表格：
-      - ID（来源于 variant_ids）
-      - rsID（来源于 gwas_path 的 rsID 列，按 ID 精确匹配）
-      - Gene（来源于 gwas_path 的 Gene 列；例如 "{'ARHGEF26-AS1'}" → "ARHGEF26-AS1"）
-      - SeqID（Gene → pro_apt 的 EntrezGeneSymbol 匹配，汇总去重后以 ';' 连接）
-      - UniProt（同上）
-      - Warn（缺失/未匹配信息；并在相应字段置为 'na'）
-
-    需要列：
-      - gwas_path:  至少含 ['ID','rsID','Gene']（大小写不敏感）
-      - pro_apt_path: 至少含 ['EntrezGeneSymbol','SeqId','UniProt']（大小写不敏感）
+    整合变体、基因和蛋白质注释信息，生成综合注释表格。
+    
+    根据变体ID列表，从GWAS结果文件和蛋白质适配子(apt)文件中提取并整合
+    相关注释信息，包括rsID、基因名称、蛋白质SeqID和UniProt信息。
+    
+    参数
+    ----
+    variant_ids : List[str]
+        要查询的变体ID列表，格式通常为 "CHROM:POS:REF:ALT"。
+        
+    gwas_path : str  
+        GWAS结果文件路径，必须包含列：
+        - 'ID': 变体标识符（用于与variant_ids匹配）
+        - 'rsID': dbSNP参考编号
+        - 'Gene': 基因名称（可能包含格式如"{'GENE_NAME'}"的字符串）
+        
+    pro_apt_path : str
+        蛋白质适配子注释文件路径，必须包含列：
+        - 'EntrezGeneSymbol': 基因符号（用于与GWAS中的Gene匹配）
+        - 'SeqId': 蛋白质序列标识符
+        - 'UniProt': UniProt数据库标识符
+        
+    out_path : str, optional
+        输出文件路径。如果未指定，将在gwas_path同目录下生成
+        "variant_gene_protein.tsv"文件。
+        
+    preview_n : int, default=10
+        预览显示的行数。
+        
+    print_preview : bool, default=True
+        是否打印预览结果到stderr。
+        
+    返回
+    ----
+    str
+        输出文件路径。
+        
+    输出格式  
+    --------
+    生成的TSV文件包含以下列：
+    - ID: 变体标识符（来自variant_ids）
+    - rsID: dbSNP编号（来自GWAS文件，未匹配时为'na'）
+    - Gene: 基因名称（清理后的格式，未匹配时为'na'）
+    - SeqID: 蛋白质序列ID（多个ID用';'分隔，未匹配时为'na'）
+    - UniProt: UniProt标识符（多个ID用';'分隔，未匹配时为'na'）
+    - Warn: 警告信息（记录匹配过程中的问题，如缺失或未找到）
+    
+    数据处理逻辑
+    -----------
+    1. 基因名称清理：从格式如"{'GENE_NAME'}"中提取实际基因名
+    2. 模糊匹配：支持基因名的大小写不敏感匹配
+    3. 多重匹配：一个基因可能对应多个蛋白质，结果用';'分隔
+    4. 错误记录：所有匹配问题都记录在Warn列中
+    
+    使用场景
+    --------
+    - GWAS后分析：为显著变体添加功能注释
+    - 蛋白质关联研究：连接遗传变异与蛋白质表达
+    - 数据整合：合并来自不同数据库的注释信息
     """
     import os
     import re
@@ -748,7 +879,7 @@ def assemble_variant_gene_protein_table(
 
 
 # ------------------------------
-# Protein expression vs genotype boxplots per variant
+# 每个变体的蛋白质表达 vs 基因型箱线图
 # ------------------------------
 
 import numpy as np
@@ -760,7 +891,7 @@ from textwrap import fill as _tw_fill
 
 import re
 
-# --- Safe import for stats and formatting ---
+# --- 安全导入统计和格式化模块 ---
 try:
     from scipy import stats as _sp_stats
 except Exception:
@@ -768,8 +899,9 @@ except Exception:
 
 _DEF_FP = "{:.3g}"
 
-# --- Helper to normalize optional string fields for display (Gene, UniProt, etc.) ---
+# --- 标准化可选字符串字段显示的辅助函数（Gene、UniProt等） ---
 def _norm_opt_str(x: Any) -> str:
+    """标准化可选字符串字段用于显示。将None、空字符串或'nan'转换为'na'。"""
     s = str(x).strip() if x is not None else ""
     if s == "" or s.lower() == "nan":
         return "na"
@@ -777,11 +909,20 @@ def _norm_opt_str(x: Any) -> str:
 
 
 def _clean_sample_id(sample_id: Any) -> Optional[str]:
-    """Normalize sample IDs to improve alignment between expression and genotype.
-    - strip spaces
-    - remove trailing `_day<digits><anything>`
-    - remove trailing `.digits` (e.g., ".1" from join/merge suffixes)
-    - return None if empty
+    """
+    标准化样本ID以改善表达量和基因型数据之间的对齐。
+    
+    处理步骤：
+    - 去除空格
+    - 移除尾部的 `_day<数字><任意内容>`
+    - 移除尾部的 `.数字`（如合并后缀中的".1"）
+    - 如果为空则返回None
+    
+    参数：
+        sample_id: 原始样本ID
+        
+    返回：
+        清理后的样本ID，如果为空则返回None
     """
     if sample_id is None:
         return None
@@ -789,19 +930,19 @@ def _clean_sample_id(sample_id: Any) -> Optional[str]:
     if s == "" or s.lower() == "nan":
         return None
     s = s.replace(" ", "")
-    # remove _day*
+    # 移除 _day* 后缀
     s = re.sub(r"_day\d+.*$", "", s, flags=re.IGNORECASE)
-    # remove .<digits> suffix like .1
+    # 移除 .<数字> 后缀，如 .1
     s = re.sub(r"\.(\d+)$", "", s)
     return s
 
 
 def _ensure_df(obj, sep="\t", dtype=str):
-    """Helper: accept DataFrame or path; return DataFrame."""
+    """辅助函数：接受DataFrame或文件路径，返回DataFrame。"""
     if isinstance(obj, pd.DataFrame):
         return obj.copy()
     if isinstance(obj, str):
-        # try tsv, then csv, then python engine auto
+        # 先尝试TSV，然后CSV，最后使用python引擎自动检测
         try:
             df = pd.read_csv(obj, sep=sep, dtype=dtype)
             if df.shape[1] == 1:
@@ -809,11 +950,11 @@ def _ensure_df(obj, sep="\t", dtype=str):
         except Exception:
             df = pd.read_csv(obj, sep=None, dtype=dtype, engine="python")
         return df
-    raise TypeError("Expected DataFrame or file path")
+    raise TypeError("期望DataFrame或文件路径")
 
 
 def _strip_day_suffix(sample_id: str) -> str:
-    """Remove trailing `_day*` from sample ID if present."""
+    """如果存在，移除样本ID尾部的 `_day*` 后缀。"""
     if sample_id is None:
         return sample_id
     s = str(sample_id)
@@ -823,57 +964,68 @@ def _strip_day_suffix(sample_id: str) -> str:
 
 
 def _normalize_model(model: str) -> str:
+    """标准化遗传模型字符串，必须是ADD、DOM或REC之一。"""
     if not isinstance(model, str):
-        raise ValueError("model must be a string in {ADD, DOM, REC}")
+        raise ValueError("model必须是字符串，可选值：{ADD, DOM, REC}")
     m = model.strip().upper()
     if m not in {"ADD", "DOM", "REC"}:
-        raise ValueError("model must be one of: ADD, DOM, REC")
+        raise ValueError("model必须是以下之一：ADD, DOM, REC")
     return m
 
 
 def _select_seqid(seqid_field: str) -> str:
-    """Given SeqID field (may be 'na' or multiple separated by ';'), pick first usable one."""
+    """从SeqID字段中选择第一个可用的ID。字段可能是'na'或用';'分隔的多个ID。"""
     if seqid_field is None:
         return "na"
     s = str(seqid_field).strip()
     if s == "" or s.lower() == "na" or s.lower() == "nan":
         return "na"
-    # split by ';' and take the first non-empty
+    # 按';'分割并取第一个非空部分
     parts = [p.strip() for p in s.split(";") if p.strip()]
     return parts[0] if parts else "na"
 
 
 def _get_group_labels_and_values(expr_s: pd.Series, gt_s: pd.Series, model: str):
     """
-    Build groups for plotting according to model.
-    Returns (labels: List[str], values: List[np.ndarray], counts: Dict[str,int]).
-    Missing genotypes '.' are ignored.
+    根据遗传模型构建用于绘图的分组。
+    
+    参数：
+        expr_s: 蛋白质表达数据Series
+        gt_s: 基因型数据Series
+        model: 遗传模型（'ADD'/'DOM'/'REC'）
+        
+    返回：
+        Tuple[List[str], List[np.ndarray], Dict[str,int]]: 
+        (标签列表, 数值数组列表, 计数字典)
+        
+    注意：
+        缺失基因型'.'会被忽略。
     """
     model = _normalize_model(model)
-    # keep only samples with non-missing genotype and expression
+    # 只保留基因型和表达量都非缺失的样本
     df = pd.DataFrame({"expr": expr_s, "gt": gt_s}).dropna()
     df = df[df["gt"].astype(str) != "."]
-    # coerce genotype to int
+    # 将基因型强制转换为整数
     try:
         df["gt"] = df["gt"].astype(int)
     except Exception:
         df = df[pd.to_numeric(df["gt"], errors="coerce").notna()]
         df["gt"] = df["gt"].astype(int)
 
-    if model == "ADD":
+    if model == "ADD":  # 加性模型
         groups = {
             "GT=0": df.loc[df["gt"] == 0, "expr"].to_numpy(),
             "GT=1": df.loc[df["gt"] == 1, "expr"].to_numpy(),
             "GT=2": df.loc[df["gt"] == 2, "expr"].to_numpy(),
         }
         labels = ["GT=0", "GT=1", "GT=2"]
-    elif model == "DOM":
+    elif model == "DOM":  # 显性模型
         groups = {
             "GT=0": df.loc[df["gt"] == 0, "expr"].to_numpy(),
             "GT=1|2": df.loc[df["gt"].isin([1, 2]), "expr"].to_numpy(),
         }
         labels = ["GT=0", "GT=1|2"]
-    else:  # REC
+    else:  # REC - 隐性模型
         groups = {
             "GT=0|1": df.loc[df["gt"].isin([0, 1]), "expr"].to_numpy(),
             "GT=2": df.loc[df["gt"] == 2, "expr"].to_numpy(),
@@ -885,13 +1037,22 @@ def _get_group_labels_and_values(expr_s: pd.Series, gt_s: pd.Series, model: str)
     return labels, values, counts
 
 
-# --- Pairwise stats computation helper ---
+# --- 成对统计分析计算辅助函数 ---
 def _compute_pairwise_stats(labels: List[str], values: List[np.ndarray]) -> pd.DataFrame:
-    """Compute pairwise stats for non-empty groups.
-    Returns a DataFrame with columns:
-      ['group_a','group_b','n_a','n_b','mean_a','mean_b','mean_diff',
-       'median_a','median_b','median_diff','t_stat','t_p','mw_u','mw_p']
-    If SciPy is unavailable, t/mw fields are filled with 'na'.
+    """
+    计算非空组之间的成对统计分析。
+    
+    参数：
+        labels: 组标签列表
+        values: 对应的数值数组列表
+        
+    返回：
+        包含以下列的DataFrame：
+        ['group_a','group_b','n_a','n_b','mean_a','mean_b','mean_diff',
+         'median_a','median_b','median_diff','t_stat','t_p','mw_u','mw_p']
+        
+    注意：
+        如果SciPy不可用，t检验和Mann-Whitney U检验字段将填充'na'。
     """
     rows = []
     k = len(labels)
@@ -943,7 +1104,16 @@ def _compute_pairwise_stats(labels: List[str], values: List[np.ndarray]) -> pd.D
 
 
 def _check_group_feasibility(n0: int, n1: int, n2: int, model: str) -> (bool, str, str):
-    """Return (ok, reason_cn, reason_en) using counts from summary (n0, n1, n2)."""
+    """
+    检查基因型分组的可行性。
+    
+    参数：
+        n0, n1, n2: 基因型0/1/2的样本数量（来自汇总统计）
+        model: 遗传模型（'ADD'/'DOM'/'REC'）
+        
+    返回：
+        Tuple[bool, str, str]: (是否可行, 中文原因, 英文原因)
+    """
     model = _normalize_model(model)
     if model == "ADD":
         # 至少两个基因型非零
@@ -963,7 +1133,7 @@ def _check_group_feasibility(n0: int, n1: int, n2: int, model: str) -> (bool, st
             f"DOM条件不满足：要求GT=0与(GT=1+GT=2)均非空（n0={n0}, n1+n2={n1+n2})",
             f"DOM not satisfied: both GT=0 and (GT=1|2) must be non-empty (n0={n0}, n1+n2={n1+n2}).",
         )
-    # REC
+    # REC - 隐性模型
     if (n0 + n1) > 0 and (n2 > 0):
         return True, "", ""
     return (
@@ -974,14 +1144,27 @@ def _check_group_feasibility(n0: int, n1: int, n2: int, model: str) -> (bool, st
 
 
 
-# --- Drawing helper: boxplot and means ---
+# --- 绘图辅助函数：箱线图和均值 ---
 def _draw_box_with_means(ax, labels: List[str], values: List[np.ndarray], counts: Dict[str,int], title: str, y_label: str):
-    """Draw boxplot and overlay mean markers; no data transformation here."""
+    """
+    绘制箱线图并叠加均值标记。
+    
+    参数：
+        ax: matplotlib轴对象
+        labels: 组标签列表
+        values: 对应的数值数组列表
+        counts: 各组的样本计数
+        title: 图标题
+        y_label: Y轴标签
+        
+    注意：
+        此函数不进行数据转换。
+    """
     bp = ax.boxplot(values, labels=[f"{lbl} (n={counts[lbl]})" for lbl in labels], showfliers=True)
     ax.set_title(title, fontsize=10, loc='center', weight='bold')
     ax.set_ylabel(y_label)
     ax.grid(True, axis="y", linestyle=":", alpha=0.4)
-    # Overlay means as blue triangles
+    # 用蓝色三角形叠加均值
     mean_plotted = False
     for i, arr in enumerate(values, start=1):
         if arr is None or len(arr) == 0:
@@ -997,9 +1180,16 @@ def _draw_box_with_means(ax, labels: List[str], values: List[np.ndarray], counts
         ax.legend(loc='best', frameon=False, fontsize=9)
 
 
-# --- Stats table rendering helper ---
+# --- 统计表格渲染辅助函数 ---
 def _render_stats_table(ax, stats_df: pd.DataFrame):
-    ax.axis('off')
+    """
+    在指定的轴上渲染统计分析结果表格。
+    
+    参数：
+        ax: matplotlib轴对象
+        stats_df: 包含成对统计分析结果的DataFrame
+    """
+    ax.set_axis_off()
     if stats_df is None or stats_df.empty:
         ax.text(0.5, 0.5, "No pairwise stats (need \u2265 two non-empty groups)", ha='center', va='center')
         return
@@ -1087,27 +1277,34 @@ def _render_stats_table(ax, stats_df: pd.DataFrame):
     ax.text(0.5, 0.06, "\u0394 = A \u2212 B  (both mean and median)", ha='center', va='center', fontsize=9)
 
 
-# --- Helper for clean "Not plotted" page ---
+# --- 生成简洁"未绘制"页面的辅助函数 ---
 def _render_not_plotted_page(pdf, page_title: str, message: str):
-    """Render a clean 'Not plotted' page with consistent typography.
-    Uses figure-level text with constrained layout so title and body are
-    visually centered and not clipped in PDF viewers.
     """
-    # Match the size of normal plot pages for consistency
+    渲染一个简洁的"未绘制"页面，具有一致的版式。
+    
+    使用图形级别的文本和约束布局，确保标题和正文在PDF查看器中
+    视觉居中且不被裁剪。
+    
+    参数：
+        pdf: PdfPages对象
+        page_title: 页面标题
+        message: 消息内容
+    """
+    # 为保持一致性，匹配正常绘图页面的大小
     fig, ax = plt.subplots(figsize=(6, 4), constrained_layout=True)
     ax.axis('off')
 
-    # Title (bold, centered, near top with ample margin)
+    # 标题（粗体，居中，顶部留有充足边距）
     fig.text(0.5, 0.88, str(page_title), ha='center', va='center', fontsize=10, weight='bold')
 
-    # Body message (wrapped and vertically centered)
+    # 正文消息（自动换行并垂直居中）
     wrapped = _tw_fill(str(message), width=60)
     fig.text(0.5, 0.55, wrapped, ha='center', va='center', fontsize=9)
 
-    # Optional faint guidance at bottom for visual balance
+    # 可选：底部的淡色引导文字以保持视觉平衡
     # fig.text(0.5, 0.12, "This page is intentionally left blank.", ha='center', fontsize=8, alpha=0.45)
 
-    # Save as-is (no bbox_inches='tight' to avoid unexpected cropping)
+    # 按原样保存（不使用bbox_inches='tight'以避免意外裁剪）
     pdf.savefig(fig)
     plt.close(fig)
 
@@ -1122,28 +1319,70 @@ def plot_protein_boxplot_per_variant(
     log2_transform: bool = True,
 ) -> str:
     """
-    基于变体注释、基因型矩阵与蛋白质表达，按指定 model（ADD/DOM/REC）绘制每个变体一页的箱图PDF。
-
+    为每个变体生成蛋白质表达箱线图PDF报告。
+    
+    根据变体注释信息、基因型矩阵和蛋白质表达数据，按照指定的遗传模型
+    （ADD/DOM/REC）为每个变体生成一页箱线图，展示不同基因型组的蛋白质表达分布。
+    
     参数
     ----
-    variant_meta : DataFrame 或 路径
-        必须包含列 ['ID','SeqID']；仅当 SeqID != 'na' 时才尝试绘图（否则记录到日志并跳过）。
-    summary_path : 路径
-        由 summarize_gt_counts() 生成的汇总TSV，至少包含 ['ID','n0','n1','n2']。
-    pro_ex_path : DataFrame 或 路径
-        蛋白质表达矩阵：行名为样本ID（末尾可能带 `_day*`，会自动去掉），列名为蛋白质 SeqID。
-    gt_mx : DataFrame 或 路径
-        基因型矩阵：行名为变体 ID（与 variant_meta.ID 对齐），列名为样本ID；元素为 {0,1,2,'.'}。
+    variant_meta : DataFrame 或 str
+        变体元数据，必须包含列 ['ID','SeqID']。
+        仅当 SeqID != 'na' 时才会生成图表，否则跳过并记录到日志。
+        可选列：'Gene', 'UniProt', 'rsID'（用于图表标题）。
+        
+    summary_path : str
+        基因型计数汇总文件路径，由 summarize_gt_counts() 生成。
+        必须包含列 ['ID','n0','n1','n2']，分别表示基因型0/1/2的样本数。
+        
+    pro_ex_path : DataFrame 或 str  
+        蛋白质表达矩阵文件。
+        - 行：样本ID（末尾的 `_day*` 后缀会被自动移除以匹配基因型数据）
+        - 列：蛋白质SeqID（需与variant_meta.SeqID匹配）
+        - 值：蛋白质表达水平
+        
+    gt_mx : DataFrame 或 str
+        基因型矩阵文件。
+        - 行：变体ID（需与variant_meta.ID对齐）
+        - 列：样本ID
+        - 值：基因型编码 {0,1,2,'.'} ，其中'.'表示缺失
+        
     model : str
-        'ADD' | 'DOM' | 'REC'。
-    out_pdf : str | None
-        输出PDF路径。若为空，则自动根据 model 命名。
-    log2_transform : bool
-        是否对蛋白质表达进行 log2 转换（默认 True）。
-
+        遗传模型，可选值：
+        - 'ADD': 加性模型（GT=0 vs GT=1 vs GT=2）
+        - 'DOM': 显性模型（GT=0 vs GT=1|2）  
+        - 'REC': 隐性模型（GT=0|1 vs GT=2）
+        
+    out_pdf : str, optional
+        输出PDF文件路径。如果未指定，将根据model自动命名。
+        
+    log2_transform : bool, default=True
+        是否对蛋白质表达数据进行log2转换。
+        
     返回
     ----
-    str : 生成的PDF路径（同目录会写出 `.log.txt` 日志）。
+    str
+        生成的PDF文件路径。同时会在相同目录生成`.log.txt`日志文件。
+        
+    输出文件
+    --------
+    - PDF报告：每个变体一页，包含箱线图和统计分析表格
+    - 日志文件：记录处理过程、跳过的变体和错误信息
+    
+    图表内容
+    --------
+    每页包含：
+    1. 箱线图：显示不同基因型组的蛋白质表达分布
+    2. 均值标记：用蓝色三角形标注各组均值
+    3. 统计表格：组间比较的t检验和Mann-Whitney U检验结果
+    4. 变体信息：ID、基因、UniProt、rsID等注释
+    
+    注意事项
+    --------
+    - 如果变体的SeqID为'na'，将跳过绘图
+    - 如果基因型分组不满足指定模型的要求（如某些组为空），将跳过绘图
+    - 缺失的表达数据和基因型'.'会被自动排除
+    - 样本ID匹配时会自动处理常见的后缀差异
     """
     # Load inputs
     vmeta = _ensure_df(variant_meta)
