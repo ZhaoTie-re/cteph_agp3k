@@ -1,0 +1,45 @@
+{
+  "plink_prefix": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/19.tommo_panel_filter/cteph_agp3k.lowfreq_common",
+  "output_tsv": "gt_mx.tsv",
+  "work_dir": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/01.pro_assoc",
+  "threads": {
+    "plink": 8
+  },
+  "totals": {
+    "variants_bim": 5677100,
+    "samples_fam": 3017
+  },
+  "request": {
+    "variants": 5,
+    "samples": 43
+  },
+  "hit": {
+    "variants": 5,
+    "samples": 43
+  },
+  "miss": {
+    "variants": 0,
+    "samples": 0
+  },
+  "pct_hit": {
+    "variants": 100.0,
+    "samples": 100.0
+  },
+  "warnings": [],
+  "result": {
+    "gt_tsv_path": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/01.pro_assoc/gt_mx.tsv",
+    "variants": 5,
+    "samples": 43
+  },
+  "missing_detail_variants": [],
+  "used_variant_order": [
+    "chr3:154069965:A:G",
+    "chr16:53884344:G:A",
+    "chr16:53887925:T:C",
+    "chr17:13528059:G:A",
+    "chr17:13528180:G:A"
+  ],
+  "paths_extract_ids": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/01.pro_assoc/tmp_export/extract.ids",
+  "missing_detail_samples": [],
+  "paths_keep_samples": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/01.pro_assoc/tmp_export/keep.samples.txt"
+}

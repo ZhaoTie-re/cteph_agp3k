@@ -760,6 +760,14 @@ from textwrap import fill as _tw_fill
 
 import re
 
+# --- Safe import for stats and formatting ---
+try:
+    from scipy import stats as _sp_stats
+except Exception:
+    _sp_stats = None
+
+_DEF_FP = "{:.3g}"
+
 # --- Helper to normalize optional string fields for display (Gene, UniProt, etc.) ---
 def _norm_opt_str(x: Any) -> str:
     s = str(x).strip() if x is not None else ""
@@ -877,6 +885,63 @@ def _get_group_labels_and_values(expr_s: pd.Series, gt_s: pd.Series, model: str)
     return labels, values, counts
 
 
+# --- Pairwise stats computation helper ---
+def _compute_pairwise_stats(labels: List[str], values: List[np.ndarray]) -> pd.DataFrame:
+    """Compute pairwise stats for non-empty groups.
+    Returns a DataFrame with columns:
+      ['group_a','group_b','n_a','n_b','mean_a','mean_b','mean_diff',
+       'median_a','median_b','median_diff','t_stat','t_p','mw_u','mw_p']
+    If SciPy is unavailable, t/mw fields are filled with 'na'.
+    """
+    rows = []
+    k = len(labels)
+    for i in range(k):
+        ai = values[i]
+        if ai is None or len(ai) == 0:
+            continue
+        for j in range(i+1, k):
+            bj = values[j]
+            if bj is None or len(bj) == 0:
+                continue
+            n_a = int(np.isfinite(ai).sum())
+            n_b = int(np.isfinite(bj).sum())
+            if n_a == 0 or n_b == 0:
+                continue
+            mean_a = float(np.nanmean(ai))
+            mean_b = float(np.nanmean(bj))
+            med_a = float(np.nanmedian(ai))
+            med_b = float(np.nanmedian(bj))
+            mean_diff = mean_a - mean_b
+            med_diff = med_a - med_b
+            t_stat = t_p = mw_u = mw_p = None
+            if _sp_stats is not None:
+                try:
+                    t_stat, t_p = _sp_stats.ttest_ind(ai, bj, equal_var=False, nan_policy='omit')
+                except Exception:
+                    t_stat, t_p = None, None
+                try:
+                    # Use two-sided Mann–Whitney U; require finite values only
+                    a_fin = np.asarray(ai, float)
+                    b_fin = np.asarray(bj, float)
+                    a_fin = a_fin[np.isfinite(a_fin)]
+                    b_fin = b_fin[np.isfinite(b_fin)]
+                    if len(a_fin) > 0 and len(b_fin) > 0:
+                        mw_u, mw_p = _sp_stats.mannwhitneyu(a_fin, b_fin, alternative='two-sided')
+                    else:
+                        mw_u, mw_p = None, None
+                except Exception:
+                    mw_u, mw_p = None, None
+            rows.append({
+                'group_a': labels[i], 'group_b': labels[j],
+                'n_a': n_a, 'n_b': n_b,
+                'mean_a': mean_a, 'mean_b': mean_b, 'mean_diff': mean_diff,
+                'median_a': med_a, 'median_b': med_b, 'median_diff': med_diff,
+                't_stat': t_stat, 't_p': t_p,
+                'mw_u': mw_u, 'mw_p': mw_p,
+            })
+    return pd.DataFrame(rows)
+
+
 def _check_group_feasibility(n0: int, n1: int, n2: int, model: str) -> (bool, str, str):
     """Return (ok, reason_cn, reason_en) using counts from summary (n0, n1, n2)."""
     model = _normalize_model(model)
@@ -908,18 +973,15 @@ def _check_group_feasibility(n0: int, n1: int, n2: int, model: str) -> (bool, st
     )
 
 
-def _plot_single_variant_box(ax, expr_s: pd.Series, gt_s: pd.Series, model: str, title: str, y_label: str):
-    """Core plotting function: draw boxplot for one variant on the given Axes.
-    Also overlay a blue triangle marker (^) at the mean of each group.
-    """
-    labels, values, counts = _get_group_labels_and_values(expr_s, gt_s, model)
-    # Draw boxplot even if some groups are empty – matplotlib handles empty as empty artists; we prefer to skip by feasibility check upstream
+
+# --- Drawing helper: boxplot and means ---
+def _draw_box_with_means(ax, labels: List[str], values: List[np.ndarray], counts: Dict[str,int], title: str, y_label: str):
+    """Draw boxplot and overlay mean markers; no data transformation here."""
     bp = ax.boxplot(values, labels=[f"{lbl} (n={counts[lbl]})" for lbl in labels], showfliers=True)
     ax.set_title(title, fontsize=10, loc='center', weight='bold')
     ax.set_ylabel(y_label)
     ax.grid(True, axis="y", linestyle=":", alpha=0.4)
-
-    # Overlay mean markers (blue triangles) per group; skip empty groups
+    # Overlay means as blue triangles
     mean_plotted = False
     for i, arr in enumerate(values, start=1):
         if arr is None or len(arr) == 0:
@@ -931,9 +993,98 @@ def _plot_single_variant_box(ax, expr_s: pd.Series, gt_s: pd.Series, model: str,
         if np.isfinite(m):
             ax.plot(i, m, marker='^', color='blue', markersize=7, linestyle='None', label=('Mean' if not mean_plotted else None))
             mean_plotted = True
-
     if mean_plotted:
         ax.legend(loc='best', frameon=False, fontsize=9)
+
+
+# --- Stats table rendering helper ---
+def _render_stats_table(ax, stats_df: pd.DataFrame):
+    ax.axis('off')
+    if stats_df is None or stats_df.empty:
+        ax.text(0.5, 0.5, "No pairwise stats (need \u2265 two non-empty groups)", ha='center', va='center')
+        return
+
+    # Display-friendly subset & formatting
+    disp = stats_df.copy()
+    disp_cols = [
+        ('group_a','A'), ('group_b','B'),
+        ('mean_diff','\u0394mean'), ('median_diff','\u0394median'),
+        ('t_p','t p'), ('mw_p','MWU p'), ('n_a','nA'), ('n_b','nB')
+    ]
+    cols = [c for c,_ in disp_cols]
+    heads = [h for _,h in disp_cols]
+
+    def _fmt(x):
+        if x is None:
+            return 'na'
+        try:
+            if isinstance(x,str):
+                return x
+            if np.isnan(x):
+                return 'na'
+        except Exception:
+            pass
+        if isinstance(x,(int,np.integer)):
+            return str(int(x))
+        try:
+            return _DEF_FP.format(float(x))
+        except Exception:
+            return str(x)
+
+    cell_text = [[_fmt(v) for v in row] for row in disp[cols].itertuples(index=False, name=None)]
+
+    # Auto sizing: make table occupy more width, slightly shorter height
+    bbox = [0.0, 0.20, 1.0, 0.50]
+    n_cols = len(heads)
+    base_width = 1.0 / n_cols
+    # Widen delta & p-value columns, shrink counts
+    col_widths = []
+    for h in heads:
+        if 'Δ' in h or 'p' in h:
+            col_widths.append(base_width * 1.5)
+        elif h in ('nA','nB'):
+            col_widths.append(base_width * 0.7)
+        else:
+            col_widths.append(base_width * 1.25)
+    # Normalize widths
+    total = sum(col_widths)
+    col_widths = [w/total for w in col_widths]
+
+    table = ax.table(
+        cellText=cell_text,
+        colLabels=heads,
+        loc='center',
+        colWidths=col_widths,
+        cellLoc='center',
+        bbox=bbox,
+    )
+    table.auto_set_font_size(False)
+    table.set_fontsize(8)  # slightly larger font
+    table.scale(1.2, 0.4)  # wider, a bit less tall
+
+    # Header styling
+    for j, _h in enumerate(heads):
+        cell = table[0, j]
+        cell.set_text_props(weight='bold')
+        cell.set_facecolor('#f0f0f0')
+        cell.set_edgecolor('0.55')
+        cell.set_linewidth(0.8)
+
+    # Body cell styling & alignment
+    n_rows = len(cell_text)
+    for i in range(1, n_rows+1):
+        for j in range(len(heads)):
+            cell = table[i, j]
+            cell.set_edgecolor('0.7')
+            cell.set_linewidth(0.6)
+            # align numbers to right for deltas/p-values; names stay centered
+            if j <= 1:
+                cell._loc = 'center'
+            else:
+                cell._loc = 'right'
+
+    # Footnote clarifying delta direction
+    ax.text(0.5, 0.06, "\u0394 = A \u2212 B  (both mean and median)", ha='center', va='center', fontsize=9)
 
 
 # --- Helper for clean "Not plotted" page ---
@@ -1132,14 +1283,46 @@ def plot_protein_boxplot_per_variant(
             expr_s = expr_s.loc[common]
             gt_s = gt_s.loc[common]
 
-            # 5) Plot
-            fig, ax = plt.subplots(figsize=(6, 4))
-            _plot_single_variant_box(
-                ax, expr_s, gt_s, model, title=page_title,
+            # 5) Build groups and compute pairwise stats
+            labels, values, counts = _get_group_labels_and_values(expr_s, gt_s, model)
+            stats_df = _compute_pairwise_stats(labels, values)
+
+            # 6) Plot: boxplot + stats table side-by-side
+            from matplotlib import gridspec as _gridspec
+            fig = plt.figure(figsize=(10.4, 4.2))
+            gs = _gridspec.GridSpec(1, 2, width_ratios=[2.8, 3.2], wspace=0.26)
+            ax_box = fig.add_subplot(gs[0, 0])
+            ax_tbl = fig.add_subplot(gs[0, 1])
+            _draw_box_with_means(
+                ax_box, labels, values, counts, title=page_title,
                 y_label=("Protein expression (log2)" if log2_transform else "Protein expression")
             )
+            _render_stats_table(ax_tbl, stats_df)
             pdf.savefig(fig)
             plt.close(fig)
+
+            # collect stats for optional TSV export
+            if 'all_stats_rows' not in locals():
+                all_stats_rows = []
+            if stats_df is not None and not stats_df.empty:
+                sdf = stats_df.copy()
+                sdf.insert(0, 'ID', vid)
+                sdf.insert(1, 'SeqID', seqid)
+                try:
+                    sdf.insert(2, 'rsID', rs_disp)
+                except Exception:
+                    pass
+                all_stats_rows.append(sdf)
+
+    # Optional: write aggregated pairwise stats to TSV alongside the PDF
+    try:
+        if 'all_stats_rows' in locals() and len(all_stats_rows) > 0:
+            stats_out = out_pdf + '.pairwise_stats.tsv'
+            all_stats_df = pd.concat(all_stats_rows, ignore_index=True)
+            all_stats_df.to_csv(stats_out, sep='\t', index=False)
+            logs.append(f"Wrote pairwise stats: {stats_out} (rows={all_stats_df.shape[0]})")
+    except Exception as _e:
+        logs.append(f"Pairwise stats export failed: {_e}")
 
     # append END marker before writing logs
     logs.append(f"END plotting: output={out_pdf}, pages={len([1 for _ in vmeta.iterrows()])}")
