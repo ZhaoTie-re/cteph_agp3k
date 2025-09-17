@@ -835,7 +835,7 @@ def assemble_variant_gene_protein_table(
             if not isinstance(rs, str) or rs.strip() == "" or rs.lower() == "nan":
                 rs = "na"
 
-        gene_list = _clean_gene_field(gene_raw)
+        gene_list = _clean_gene_field(gene_raw) # type: ignore
         gene_display = ";".join(gene_list) if gene_list else "na"
         if not gene_list:
             warn_msgs.append("no_gene_in_gwas")
@@ -1103,7 +1103,7 @@ def _compute_pairwise_stats(labels: List[str], values: List[np.ndarray]) -> pd.D
     return pd.DataFrame(rows)
 
 
-def _check_group_feasibility(n0: int, n1: int, n2: int, model: str) -> (bool, str, str):
+def _check_group_feasibility(n0: int, n1: int, n2: int, model: str) -> (bool, str, str): # type: ignore
     """
     检查基因型分组的可行性。
     
@@ -1412,7 +1412,7 @@ def plot_protein_boxplot_per_variant(
         if ex_df[first_col].notna().sum() >= len(ex_df) * 0.95 and ex_df[first_col].nunique(dropna=True) >= len(ex_df) * 0.95:
             ex_df = ex_df.set_index(first_col)
     # Clean sample IDs in index and strip `_day*` etc.
-    ex_df.index = [ _clean_sample_id(x) for x in ex_df.index ]
+    ex_df.index = [ _clean_sample_id(x) for x in ex_df.index ] # type: ignore
     # Drop any rows that became None after cleaning
     ex_df = ex_df[~pd.isna(ex_df.index)]
 
@@ -1523,7 +1523,7 @@ def plot_protein_boxplot_per_variant(
             gt_s = gt_s.loc[common]
 
             # 5) Build groups and compute pairwise stats
-            labels, values, counts = _get_group_labels_and_values(expr_s, gt_s, model)
+            labels, values, counts = _get_group_labels_and_values(expr_s, gt_s, model) # type: ignore
             stats_df = _compute_pairwise_stats(labels, values)
 
             # 6) Plot: boxplot + stats table side-by-side
@@ -1551,13 +1551,13 @@ def plot_protein_boxplot_per_variant(
                     sdf.insert(2, 'rsID', rs_disp)
                 except Exception:
                     pass
-                all_stats_rows.append(sdf)
+                all_stats_rows.append(sdf) # type: ignore
 
     # Optional: write aggregated pairwise stats to TSV alongside the PDF
     try:
-        if 'all_stats_rows' in locals() and len(all_stats_rows) > 0:
+        if 'all_stats_rows' in locals() and len(all_stats_rows) > 0: # pyright: ignore[reportPossiblyUnboundVariable]
             stats_out = out_pdf + '.pairwise_stats.tsv'
-            all_stats_df = pd.concat(all_stats_rows, ignore_index=True)
+            all_stats_df = pd.concat(all_stats_rows, ignore_index=True) # type: ignore
             all_stats_df.to_csv(stats_out, sep='\t', index=False)
             logs.append(f"Wrote pairwise stats: {stats_out} (rows={all_stats_df.shape[0]})")
     except Exception as _e:
