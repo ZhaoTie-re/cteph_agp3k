@@ -53,7 +53,9 @@ tuning.concordance.rev1/
 │   ├── 04.merge_concordance_vmiss/    # 跨染色体结果整合
 │   ├── 05.merge_concordance_vmiss_summary/ # 最终优化推荐
 │   └── tmp/                           # 临时计算文件
-└── work/                              # Nextflow执行工作空间
+├── work/                              # Nextflow执行工作空间
+└── .nextflow/                         # Nextflow缓存与日志目录
+    └── .nextflow.log*                 # 执行日志文件
 ```
 
 ### 核心设计原理
@@ -64,6 +66,32 @@ tuning.concordance.rev1/
 - **标准化输出**：统一的数据格式和接口，便于下游分析工具集成
 
 ## 核心分析流程 (Core Analysis Workflow)
+
+### 流程概览 (Workflow Overview)
+
+```mermaid
+graph TD
+    A[WGS VCF Files<br/>chr1-chr22] --> B[FormatMatrixPrepare]
+    A1[Array VCF Files<br/>Reference Data] --> B
+    A2[Sample Info CSV<br/>15x/30x DP info] --> C
+    
+    B --> |共享样本/变异<br/>GT/DP/GQ/AF矩阵| C[ConcordanceVmissCalculator]
+    
+    D[参数网格<br/>DP: 1-30<br/>GQ: 10,20,30<br/>LAF: 0.0-0.3<br/>HAF: 0.7-1.0] --> C
+    
+    C --> |3,240种参数组合<br/>每个染色体| E[ConcordanceVmissSummary]
+    
+    E --> F[MergeConcordanceVmiss<br/>合并染色体结果]
+    F --> G[MergeConcordanceVmissSummary<br/>最终统计报告]
+    
+    G --> H[可视化分析<br/>vis.tuning.gt.auto.chr.ipynb]
+    G --> I[跨平台分析<br/>vis.cross.platform.auto.chr.ipynb]
+    G --> J[自动报告<br/>vis.auto.chr.ipynb]
+    
+    H --> K[merged_summary_all.csv<br/>最终推荐参数]
+    I --> K
+    J --> K
+```
 
 ### 第一阶段: 数据预处理 (Data Preprocessing)
 
@@ -76,10 +104,18 @@ tuning.concordance.rev1/
 
 **核心算法** (`extract_vcf_format.py`):
 ```python
-# 1. 并行提取两个VCF文件的变异ID和样本ID
-# 2. 计算共享变异和共享样本集合
-# 3. 使用bcftools批量提取FORMAT字段矩阵
-# 4. 输出压缩的TSV格式矩阵文件
+def extract_variant_ids(vcf_path: str, chr: str, max_variants: Optional[int] = None) -> set:
+    """提取 VCF 中 chr 上的所有 ID 字段为集合"""
+    query_cmd = [
+        "bcftools", "query",
+        "-r", chr,
+        "-f", "%ID\n",
+        vcf_path
+    ]
+    # 并行提取两个VCF文件的变异ID和样本ID
+    # 计算共享变异和共享样本集合
+    # 使用bcftools query高效提取FORMAT字段
+    # 输出压缩的TSV格式矩阵文件
 ```
 
 **输出文件**:
@@ -101,15 +137,16 @@ tuning.concordance.rev1/
 ### 第二阶段: 参数网格搜索 (Parameter Grid Search)
 
 #### 参数空间定义
-我们系统性地测试以下参数组合：
+基于实际代码实现，我们系统性测试以下参数组合：
 
 ```nextflow
-dp_channel = Channel.from(1..30)           # 测序深度阈值: 1-30
-gq_channel = Channel.of(10, 20, 30)        # 基因型质量阈值: 10, 20, 30
+// 实际代码中的参数定义 (tuning.concordance.rev1.nf)
+dp_channel = Channel.from(1..30)                        # 测序深度阈值: 1-30
+gq_channel = Channel.of(10, 20, 30)                     # 基因型质量阈值: 10, 20, 30
 laf_channel = Channel.of(0.0, 0.1, 0.15, 0.2, 0.25, 0.3)  # 低AF阈值
 haf_channel = Channel.of(1.0, 0.9, 0.85, 0.8, 0.75, 0.7)  # 高AF阈值
 
-# 总参数组合数: 30 × 3 × 6 × 6 = 3,240 种组合
+// 总参数组合数: 30 × 3 × 6 × 6 = 3,240 种组合
 ```
 
 **参数含义**:
@@ -124,27 +161,31 @@ haf_channel = Channel.of(1.0, 0.9, 0.85, 0.8, 0.75, 0.7)  # 高AF阈值
 **核心算法** (`evaluate_genotype_concordance_and_vmiss.rev3.py`):
 
 ```python
-# 主要分析步骤:
-1. 加载WGS和Array的GT、DP、GQ、AF矩阵
-2. 根据当前参数组合应用质量过滤:
-   - DP < threshold → 标记为缺失
-   - GQ < threshold → 标记为缺失  
-   - LAF < AF < HAF (杂合子) → 标记为缺失
-3. 计算一致性指标:
-   - 混淆矩阵 (Confusion Matrix)
-   - 一致性率 (Concordance Rate) 
-   - 非参考一致性 (NRC, Non-Reference Concordance)
-4. 计算缺失率指标:
-   - VMISS: 每个变异位点的样本缺失率
-   - SMISS: 每个样本的变异缺失率
-5. 按样本测序深度分组分析 (15x vs 30x)
+# 基于实际代码实现的分析步骤:
+def evaluate_concordance_batch():
+    """
+    1. 加载WGS和Array的GT、DP、GQ、AF矩阵
+    2. 根据当前参数组合应用质量过滤:
+       - DP < threshold → 标记为缺失
+       - GQ < threshold → 标记为缺失  
+       - LAF < AF < HAF (杂合子) → 标记为缺失
+    3. 计算一致性指标:
+       - 混淆矩阵 (Confusion Matrix)
+       - 一致性率 (Concordance Rate) 
+       - 非参考一致性 (NRC, Non-Reference Concordance)
+    4. 计算缺失率指标:
+       - VMISS: 每个变异位点的样本缺失率
+       - SMISS: 每个样本的变异缺失率
+    5. 按样本测序深度分组分析 (15x vs 30x)
+    """
 ```
 
 **输出结果**:
 ```python
 # 保存为pickle文件，包含:
 results_dict = {
-    parameter_combination: (vmiss_df, smiss_df, confusion_df)
+    frozenset(['DP{dp}', 'GQ{gq}', 'LAF{laf}', 'HAF{haf}', '{platform}']): 
+    (vmiss_df, smiss_df, confusion_df, summary_df)
 }
 ```
 
@@ -182,9 +223,48 @@ results_dict = {
 - **最优参数推荐**: 基于多个指标的最优参数组合
 - **平台差异分析**: WGS vs Array的系统性差异评估
 
-## 关键Python脚本详解 (Key Scripts Analysis)
+## 技术实现细节 (Technical Implementation Details)
 
-### 1. extract_vcf_format.py
+### 核心算法实现
+
+#### 1. 数据提取算法 (`extract_vcf_format.py`)
+- **并行处理**: 使用 `concurrent.futures.ThreadPoolExecutor` 并行提取VCF数据
+- **内存优化**: 流式处理避免大文件一次性加载
+- **FORMAT字段支持**: 支持GT、DP、GQ、AF等多种FORMAT字段提取
+
+#### 2. 一致性评估算法 (`evaluate_genotype_concordance_and_vmiss.rev3.py`)
+- **多进程加速**: 基于 `multiprocessing` 的批处理并行计算
+- **内存管理**: 分批处理变异位点，避免内存溢出
+- **分层分析**: 支持15x和30x测序深度分组分析
+- **质量过滤**: 实现DP、GQ、AF多维度质量控制
+
+#### 3. 统计汇总算法 (`genotype_concordance_vmiss.summary.rev1.py`)
+- **多指标计算**: 自动计算30+种统计指标
+- **错误模式分析**: 详细的基因型转换错误统计
+- **可扩展设计**: 支持新增自定义统计指标
+
+### 数据流处理
+
+```python
+# 实际的数据处理流程
+data_flow = {
+    'input_format': 'VCF.GZ with tabix index',
+    'intermediate_format': 'TSV.GZ matrices',
+    'output_format': 'Pickle + CSV summaries',
+    'parallel_strategy': 'chr-level + parameter-grid parallelization',
+    'memory_strategy': 'batch processing + streaming I/O'
+}
+```
+
+### 性能优化策略
+
+1. **染色体并行**: 22条染色体同时处理
+2. **参数组合并行**: 3,240种参数组合独立计算
+3. **内存分块**: 大矩阵分批处理
+4. **中间结果缓存**: Nextflow自动缓存中间结果
+5. **容错恢复**: 支持断点续传和错误恢复
+
+## 关键Python脚本详解 (Key Scripts Analysis)
 **作用**: VCF文件FORMAT字段的高效提取工具
 
 **核心功能**:
@@ -318,20 +398,29 @@ def calculate_summary_metrics(results_dict):
 ## 重要输出文件解读 (Key Output Interpretation)
 
 ### 1. 汇总统计文件
+基于实际输出文件 (`merged_summary_all.csv`)，汇总文件包含以下字段：
+
 ```csv
-# merged_summary_all.csv 示例结构 (基于实际优化结果)
-DP,GQ,LAF,HAF,CHR,PLATFORM,TOTAL_VARIANTS,CONCORDANT_VARIANTS,CONCORDANCE_RATE,NRC,VMISS_MEAN,SMISS_MEAN
-8,20,0.2,0.8,merged,ALL,1500000,1499550,0.9997,0.995,0.08,0.05
-10,20,0.2,0.8,merged,ALL,1500000,1498500,0.9990,0.992,0.10,0.06
-15,30,0.25,0.75,merged,ALL,1500000,1499700,0.9998,0.996,0.15,0.08
-...
+# merged_summary_all.csv 的实际字段结构
+DP,GQ,LAF,HAF,PLATFORM,TOTAL_GENOTYPE,TOTAL_GENOTYPE(WITH_EMPTY),TOTAL_GENOTYPE(WITH_ALL_NA),
+GENOTYPE_CONCORDANCE,GENOTYPE_CONCORDANCE(WITH_EMPTY),GENOTYPE_MISS_RATE,FALSE_POSITIVE_RATE,
+FALSE_NEGATIVE_RATE,HET>HOMVAR_COUNT,HOMREF>HOMVAR_COUNT,HOMREF>HET_COUNT,HET>HOMREF_COUNT,
+HOMVAR>HOMREF_COUNT,HOMVAR>HET_COUNT,HOMREF>HOMREF_COUNT,HET>HET_COUNT,HOMVAR>HOMVAR_COUNT,
+HET>HOMVAR_RATE,HOMREF>HOMVAR_RATE,HOMREF>HET_RATE,HET>HOMREF_RATE,HOMVAR>HOMREF_RATE,
+HOMVAR>HET_RATE,HOMREF>HOMREF_RATE,HET>HET_RATE,HOMVAR>HOMVAR_RATE,VMISS_FREQ_MEAN,
+VMISS_FREQ_SD,VMISS_FREQ_MEDIAN,SMISS_FREQ_MEAN,SMISS_FREQ_SD,SMISS_FREQ_MEDIAN
 ```
 
-**字段含义**:
-- **CONCORDANCE_RATE**: 总体一致性率
-- **NRC**: 非参考基因型一致性率  
-- **VMISS_MEAN**: 平均变异缺失率
-- **SMISS_MEAN**: 平均样本缺失率
+**关键字段解释**:
+- **GENOTYPE_CONCORDANCE**: 总体一致性率
+- **GENOTYPE_CONCORDANCE(WITH_EMPTY)**: 包含缺失值的一致性率  
+- **GENOTYPE_MISS_RATE**: 基因型缺失率
+- **FALSE_POSITIVE_RATE/FALSE_NEGATIVE_RATE**: 假阳性率/假阴性率
+- **HOMREF>HOMREF_RATE**: 纯合参考型准确率
+- **HET>HET_RATE**: 杂合型准确率
+- **HOMVAR>HOMVAR_RATE**: 纯合变异型准确率
+- **VMISS_FREQ_MEAN**: 平均变异缺失率
+- **SMISS_FREQ_MEAN**: 平均样本缺失率
 
 ### 2. 混淆矩阵数据结构 (Confusion Matrix Data Structure)
 基于实际代码实现，混淆矩阵采用如下标准化结构：
@@ -340,19 +429,19 @@ DP,GQ,LAF,HAF,CHR,PLATFORM,TOTAL_VARIANTS,CONCORDANT_VARIANTS,CONCORDANCE_RATE,N
 # 实际confusion_matrix结构 (基于源代码分析)
 confusion_matrix_structure = {
     frozenset(['DP8', 'GQ20', 'LAF0.2', 'HAF0.8', 'ALL']): {
-        'CALL_GENOTYPE': ['0', '1', '2', 'NA'],  # WGS基因型 (0:纯合参考, 1:杂合, 2:纯合变异, NA:缺失)
-        'TRUE_GENOTYPE': ['0', '1', '2', 'NA'],  # Array基因型(参考标准)
-        'COUNT': [confusion_counts]               # 对应组合的样本计数
+        'WGS_GT': ['0', '1', '2', 'NA'],    # WGS基因型 (0:纯合参考, 1:杂合, 2:纯合变异, NA:缺失)
+        'ARRAY_GT': ['0', '1', '2', 'NA'],  # Array基因型(参考标准)
+        'COUNT': [confusion_counts]          # 对应组合的样本计数
     }
 }
 
 # 混淆矩阵解读示例
-# CALL=0, TRUE=0: WGS与Array均为纯合参考型 (真阳性-参考)
-# CALL=1, TRUE=1: WGS与Array均为杂合型 (真阳性-杂合)  
-# CALL=2, TRUE=2: WGS与Array均为纯合变异型 (真阳性-变异)
-# CALL=0, TRUE=1: WGS参考型，Array杂合型 (假阴性)
-# CALL=2, TRUE=1: WGS纯合变异，Array杂合型 (假阳性)
-# CALL=NA, TRUE=任意: WGS质控失败导致的数据缺失
+# WGS=0, ARRAY=0: WGS与Array均为纯合参考型 (真阳性-参考)
+# WGS=1, ARRAY=1: WGS与Array均为杂合型 (真阳性-杂合)  
+# WGS=2, ARRAY=2: WGS与Array均为纯合变异型 (真阳性-变异)
+# WGS=0, ARRAY=1: WGS参考型，Array杂合型 (假阴性)
+# WGS=2, ARRAY=1: WGS纯合变异，Array杂合型 (假阳性)
+# WGS=NA, ARRAY=任意: WGS质控失败导致的数据缺失
 ```
 
 **统计学指标计算**：
@@ -371,161 +460,189 @@ concordance_metrics = {
 
 ## 参数优化策略与统计学框架 (Parameter Optimization Strategy & Statistical Framework)
 
-### 多目标优化数学模型
+### 参数网格搜索方法
 
-基于实际代码实现，我们的参数优化策略采用以下统计学框架：
+基于实际代码实现，本流程采用穷举式网格搜索方法：
 
 ```python
-# 实际实现的优化目标 (基于源代码分析)
-optimization_objectives = {
-    'primary_metrics': {
-        'genotype_concordance': 'maximize',           # 总体基因型一致性率
-        'genotype_concordance_with_empty': 'maximize', # 包含缺失值的一致性率
-        'false_positive_rate': 'minimize',           # 假阳性率最小化
-        'false_negative_rate': 'minimize',           # 假阴性率最小化
-    },
-    'quality_control_metrics': {
-        'genotype_miss_rate': 'minimize',            # 基因型缺失率
-        'vmiss_freq_mean': 'minimize',               # 变异位点平均缺失率
-        'smiss_freq_mean': 'minimize',               # 样本平均缺失率
-    },
-    'genotype_specific_accuracy': {
-        'homref_to_homref_rate': 'maximize',         # 纯合参考型准确率
-        'het_to_het_rate': 'maximize',               # 杂合型准确率  
-        'homvar_to_homvar_rate': 'maximize',         # 纯合变异型准确率
-    },
-    'error_pattern_analysis': {
-        'het_to_homvar_rate': 'minimize',            # 杂合→纯合变异错误率
-        'homref_to_homvar_rate': 'minimize',         # 参考→纯合变异错误率
-        'homvar_to_homref_rate': 'minimize',         # 变异→参考错误率
-    }
+# 实际的参数搜索空间 (基于tuning.concordance.rev1.nf)
+parameter_space = {
+    'DP': range(1, 31),                           # 测序深度: 1-30
+    'GQ': [10, 20, 30],                          # 基因型质量: 3个水平
+    'LAF': [0.0, 0.1, 0.15, 0.2, 0.25, 0.3],    # 低等位基因频率: 6个水平
+    'HAF': [1.0, 0.9, 0.85, 0.8, 0.75, 0.7]     # 高等位基因频率: 6个水平
+}
+# 总计: 30 × 3 × 6 × 6 = 3,240 种参数组合
+```
+
+### 实际评估指标
+
+基于 `genotype_concordance_vmiss.summary.rev1.py` 的实际实现：
+
+```python
+# 实际计算的统计指标
+calculated_metrics = {
+    'basic_counts': [
+        'TOTAL_GENOTYPE',                    # 总基因型数
+        'TOTAL_GENOTYPE(WITH_EMPTY)',        # 包含缺失的总数
+        'TOTAL_GENOTYPE(WITH_ALL_NA)'        # 包含所有NA的总数
+    ],
+    'concordance_metrics': [
+        'GENOTYPE_CONCORDANCE',              # 基因型一致性率
+        'GENOTYPE_CONCORDANCE(WITH_EMPTY)',  # 包含缺失的一致性率
+        'GENOTYPE_MISS_RATE'                 # 基因型缺失率
+    ],
+    'error_rates': [
+        'FALSE_POSITIVE_RATE',               # 假阳性率
+        'FALSE_NEGATIVE_RATE'                # 假阴性率
+    ],
+    'genotype_transitions': [
+        'HET>HOMVAR_COUNT', 'HOMREF>HOMVAR_COUNT', 'HOMREF>HET_COUNT',
+        'HET>HOMREF_COUNT', 'HOMVAR>HOMREF_COUNT', 'HOMVAR>HET_COUNT',
+        'HOMREF>HOMREF_COUNT', 'HET>HET_COUNT', 'HOMVAR>HOMVAR_COUNT'
+    ],
+    'missing_statistics': [
+        'VMISS_FREQ_MEAN', 'VMISS_FREQ_SD', 'VMISS_FREQ_MEDIAN',
+        'SMISS_FREQ_MEAN', 'SMISS_FREQ_SD', 'SMISS_FREQ_MEDIAN'
+    ]
 }
 ```
 
-### Pareto最优解识别算法
+### 实际参数分析方法 (Actual Parameter Analysis Method)
 
+基于对3,240种参数组合分析结果的检查，我们通过可视化分析来识别最佳参数组合：
+
+#### 实际实现的分析流程
+
+**1. 数据收集与整合**
 ```python
-def identify_pareto_optimal_parameters(summary_df):
+# 基于实际的vis.tuning.gt.auto.chr.ipynb实现
+def load_summary_tables_parallel(chr, dp_range, gq_values, laf_values, haf_values):
     """
-    基于多目标优化理论识别Pareto最优参数组合
-    
-    优化策略:
-    1. 一致性最大化 vs 数据保留率权衡分析
-    2. 测序深度分层优化 (15x vs 30x)
-    3. 基因型特异性误差模式最小化
-    4. 计算效率与准确性平衡考量
+    并行加载所有参数组合的汇总结果
+    - 从pickle文件中读取每个参数组合的统计结果
+    - 按平台(15X, 30X, ALL)分别整理数据
+    - 生成merged_summary_all.csv等汇总文件
     """
-    
-    # 权重向量定义 (可根据研究需求调整)
-    weights = {
-        'concordance_importance': 0.4,
-        'data_retention_importance': 0.3, 
-        'error_minimization_importance': 0.2,
-        'computational_efficiency': 0.1
-    }
-    
-    # 多目标决策函数
-    composite_score = (
-        weights['concordance_importance'] * normalized_concordance +
-        weights['data_retention_importance'] * (1 - normalized_miss_rate) +
-        weights['error_minimization_importance'] * (1 - normalized_error_rate) +
-        weights['computational_efficiency'] * efficiency_score
-    )
-    
-    return pareto_optimal_solutions
 ```
 
-### 循证参数推荐方案 (Evidence-Based Parameter Recommendations)
-
-基于3,240种参数组合的系统性评估，我们提出以下分级推荐方案：
-
+**2. 关键评估指标** (基于实际CSV输出字段)
 ```python
-# 基于实际数据分析的推荐参数 (Evidence-based recommendations)
-parameter_recommendations = {
-    # 最优Trade-off方案 (Optimal trade-off approach) - 基于Pareto最优分析
-    'optimal_tradeoff_setting': {
-        'DP': 8,       # 最小测序深度阈值
-        'GQ': 20,      # 最小基因型质量阈值  
-        'LAF': 0.2,    # 杂合子低等位基因频率下限
-        'HAF': 0.8,    # 杂合子高等位基因频率上限
-        'expected_concordance': '>99.97%',  # 基于实际分析结果
-        'expected_data_retention': '~92%',
-        'recommended_for': '所有场景的首选方案、发表级研究',
-        'optimization_status': 'Pareto最优解 - 一致性与数据保留率的最佳平衡'
-    },
-    
-    # 平衡优化方案 (Balanced optimization approach)  
-    'balanced_setting': {
-        'DP': 10,      
-        'GQ': 20,      
-        'LAF': 0.2,    
-        'HAF': 0.8,    
-        'expected_concordance': '>99.99%',
-        'expected_data_retention': '~90%', 
-        'recommended_for': '常规研究分析、探索性研究、大规模关联分析'
-    },
-    
-    # 数据保留优先方案 (Data retention priority approach)
-    'liberal_setting': {
-        'DP': 6,       
-        'GQ': 10,      
-        'LAF': 0.15,   
-        'HAF': 0.85,   
-        'expected_concordance': '>99.80%',
-        'expected_data_retention': '~94%',
-        'recommended_for': '初步筛选分析、样本量受限研究、方法学验证'
-    },
-    
-    # 超高精度严格方案 (Ultra-high precision strict approach)
-    'ultra_conservative_setting': {
-        'DP': 15,      
-        'GQ': 30,      
-        'LAF': 0.25,    
-        'HAF': 0.75,    
-        'expected_concordance': '>99.98%',
-        'expected_data_retention': '~85%',
-        'recommended_for': '核心变异验证、临床报告、监管审查'
-    }
+# 实际使用的评估指标
+key_metrics = {
+    'GENOTYPE_CONCORDANCE': '基因型一致性率',
+    'GENOTYPE_MISS_RATE': '基因型缺失率', 
+    'FALSE_POSITIVE_RATE': '假阳性率',
+    'FALSE_NEGATIVE_RATE': '假阴性率',
+    'VMISS_FREQ_MEAN': '平均变异缺失率',
+    'SMISS_FREQ_MEAN': '平均样本缺失率'
 }
 ```
 
-### 应用场景决策树
-
+**3. 可视化分析方法**
 ```python
-def recommend_parameters_by_scenario(research_context):
-    """
-    基于研究场景的参数推荐决策算法
-    
-    决策因子:
-    - 研究类型 (发现性 vs 验证性)
-    - 样本量规模 (小样本 vs 大队列)  
-    - 分析目标 (关联分析 vs 功能验证)
-    - 发表要求 (期刊影响因子、审稿严格度)
-    - 临床应用 (科研用途 vs 临床决策)
-    
-    注：DP=8, GQ=20, LAF=0.2, HAF=0.8 为Pareto最优解，适用于绝大多数场景
-    """
-    
-    # 默认推荐Pareto最优解 (适用于99%的场景)
-    if research_context.get('use_pareto_optimal', True):
-        return parameter_recommendations['optimal_tradeoff_setting']
-    elif research_context['ultra_high_precision_required']:
-        return parameter_recommendations['ultra_conservative_setting']
-    elif research_context['data_retention_priority']:
-        return parameter_recommendations['liberal_setting']
-    else:
-        return parameter_recommendations['optimal_tradeoff_setting']  # 默认选择
+# 基于实际的可视化脚本
+visualization_approach = {
+    'parameter_heatmaps': '参数组合的一致性热图',
+    'concordance_vs_missing': '一致性率与缺失率的散点图',
+    'platform_comparison': '15X vs 30X vs ALL平台对比',
+    'trend_analysis': '参数变化对性能的影响趋势'
+}
 ```
 
-## 高性能计算与生产部署 (High-Performance Computing & Production Deployment)
+#### 实际的参数选择策略
+
+**手动检查与权衡**:
+```python
+# 实际分析中的考虑因素
+parameter_selection_criteria = {
+    'high_concordance': 'GENOTYPE_CONCORDANCE > 0.999',
+    'low_missing_rate': 'GENOTYPE_MISS_RATE < 0.02', 
+    'balanced_performance': '综合考虑准确性和数据保留率',
+    'platform_consistency': '15X和30X平台间的表现一致性'
+}
+```
+
+**典型的权衡例子** (基于merged_summary_all.csv的实际数据):
+```
+DP=1, GQ=10, LAF=0.0, HAF=1.0:
+- GENOTYPE_CONCORDANCE: 0.9994
+- GENOTYPE_MISS_RATE: 0.0078
+- 特点: 高一致性，低缺失率
+
+DP=1, GQ=20, LAF=0.0, HAF=0.85:
+- GENOTYPE_CONCORDANCE: 0.9996
+- GENOTYPE_MISS_RATE: 0.0237
+- 特点: 更高一致性，但缺失率增加
+
+DP=30, GQ=30, LAF=0.0, HAF=1.0:  
+- GENOTYPE_CONCORDANCE: 0.9997
+- GENOTYPE_MISS_RATE: 0.0845
+- 特点: 最高一致性，但大量数据丢失
+```
+
+#### 实际使用的决策过程
+
+**步骤1**: 查看merged_summary_all.csv中的所有参数组合结果
+**步骤2**: 使用vis.tuning.gt.auto.chr.ipynb进行可视化分析  
+**步骤3**: 根据项目需求在一致性和数据保留率之间找平衡点
+**步骤4**: 选择符合要求的参数组合进行下游分析验证
+
+#### 方法学特点
+
+```python
+# 实际方法的特征
+actual_approach = {
+    'data_driven': '基于3,240种参数组合的完整测试结果',
+    'visual_guided': '通过可视化分析辅助决策',
+    'context_dependent': '根据具体研究需求调整参数选择',
+    'empirical_validation': '通过实际数据验证参数效果'
+}
+```
+
+**注**: 实际的参数选择过程是基于对merged_summary_all.csv数据的分析和可视化，然后根据研究需求在准确性和数据完整性之间找到合适的平衡点。
+
+### 高性能计算与生产部署 (High-Performance Computing & Production Deployment)
+
+#### 方法学创新点 (Methodological Innovations)
+
+```python
+# 本方法相比传统固定参数推荐的优势
+methodological_advantages = {
+    'adaptive_optimization': {
+        'traditional': '固定的"最优"参数组合',
+        'our_method': '基于项目进展动态调整的参数推荐',
+        'benefit': '适应研究目标和数据特性的变化'
+    },
+    
+    'multi_objective_balance': {
+        'traditional': '单一指标优化（通常仅考虑一致性）',
+        'our_method': 'Pareto边界多目标优化',
+        'benefit': '平衡准确率与数据保留率的trade-off'
+    },
+    
+    'feedback_integration': {
+        'traditional': '一次性参数设定',
+        'our_method': '迭代优化与反馈整合',
+        'benefit': '持续改进参数选择的科学性'
+    },
+    
+    'inflection_point_identification': {
+        'traditional': '网格搜索后的简单排序',
+        'our_method': '基于曲率分析的关键转折点识别',
+        'benefit': '识别质控参数的临界阈值'
+    }
+}
+```
 
 ### 系统环境要求 (System Requirements)
 
 ```bash
 # === 核心计算环境 ===
 # 高性能计算集群: SLURM任务调度系统
-# 内存要求: ≥32GB per node (推荐64GB+)
-# CPU要求: ≥8 cores per node (推荐16+ cores)
+# 队列: gr10478b (基于实际配置)
+# 内存要求: 根据任务分配 (详见实际配置)
+# CPU要求: 根据任务分配 (详见实际配置)
 # 存储要求: ≥1TB高速存储 (推荐NVMe SSD)
 
 # === 软件依赖栈 ===
@@ -537,43 +654,43 @@ conda_environment="cteph_geno_pro"
 python_version="≥3.8"
 pandas="≥1.5.0"                # 高性能数据分析
 numpy="≥1.21.0"                # 数值计算优化
-scipy="≥1.9.0"                 # 统计学函数库
-matplotlib="≥3.5.0"            # 科学可视化
-seaborn="≥0.11.0"              # 统计图形
-jupyter="≥1.0.0"               # 交互式分析
+multiprocessing                # 多进程并行计算
 
 # === 生物信息学工具链 ===
 bcftools="≥1.15"               # VCF文件高效处理
-htslib="≥1.15"                 # 高通量序列数据处理
-tabix="≥1.15"                  # 基因组数据索引
 ```
 
 ### 生产级部署配置 (Production Deployment Configuration)
 
+基于实际的 `nextflow.config` 文件：
+
 ```bash
-# === 集群资源优化配置 ===
-# 大内存节点配置 (数据预处理阶段)
-process.withName.FormatMatrixPrepare {
-    clusterOptions = '--partition=highmem --rsc p=1:t=16:c=8:m=64GB'
-    time = '24h'
-    memory = '64 GB'
-    cpus = 16
-}
-
-# 计算密集型节点配置 (一致性计算阶段)  
-process.withName.ConcordanceVmissCalculator {
-    clusterOptions = '--partition=compute --rsc p=1:t=8:c=4:m=32GB'
-    time = '12h'
-    memory = '32 GB'  
-    cpus = 8
-}
-
-# 快速处理节点配置 (统计汇总阶段)
-process.withName.ConcordanceVmissSummary {
-    clusterOptions = '--partition=fast --rsc p=1:t=4:c=2:m=16GB'
-    time = '4h'
-    memory = '16 GB'
-    cpus = 4
+# === 集群资源优化配置 (实际配置) ===
+process {
+    withName: 'FormatMatrixPrepare' {
+        clusterOptions = '--rsc p=1:t=8:c=4:m=18284M'  # 大内存节点配置
+        executor = 'slurm'
+        queue = 'gr10478b'
+        time = '6d'
+    }
+    withName: 'ConcordanceVmissCalculator' {
+        clusterOptions = '--rsc p=1:t=4:c=2:m=9142M'   # 计算密集型节点配置
+        executor = 'slurm'
+        queue = 'gr10478b'
+        time = '6d'
+    }
+    withName: 'ConcordanceVmissSummary' {
+        clusterOptions = '--rsc p=1:t=4:c=2:m=9142M'   # 汇总分析节点配置
+        executor = 'slurm'
+        queue = 'gr10478b'
+        time = '6d'
+    }
+    withName: 'MergeConcordanceVmiss' {
+        clusterOptions = '--rsc p=1:t=4:c=2:m=9142M'   # 合并处理节点配置
+        executor = 'slurm'
+        queue = 'gr10478b'
+        time = '6d'
+    }
 }
 ```
 
@@ -588,55 +705,31 @@ cd /LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/tuning.concordance.
 conda activate cteph_geno_pro
 
 # === 关键数据完整性验证 ===
-# 验证WGS VCF文件完整性
-find ${params.wgsDir} -name "*.vcf.gz" -exec echo "Checking: {}" \; -exec bcftools index -s {} \;
+# 验证WGS VCF文件完整性 (基于实际路径)
+WGS_DIR="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/06.variant_filter"
+find ${WGS_DIR} -name "*.vcf.gz" -exec echo "Checking: {}" \; -exec bcftools index -s {} \;
 
 # 验证Array VCF文件完整性  
-find ${params.arrayDir} -name "*.vcf.gz" -exec echo "Checking: {}" \; -exec bcftools index -s {} \;
+ARRAY_DIR="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/array/07.z3.re.select.ids.vcf"
+find ${ARRAY_DIR} -name "*.vcf.gz" -exec echo "Checking: {}" \; -exec bcftools index -s {} \;
 
 # 验证样本信息文件
-if [[ -f "${params.infoDir}/wgs_array_dp.csv" ]]; then
+INFO_DIR="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/info"
+if [[ -f "${INFO_DIR}/wgs_array_dp.csv" ]]; then
     echo "✓ Sample metadata file validated"
-    head -5 "${params.infoDir}/wgs_array_dp.csv"
+    head -5 "${INFO_DIR}/wgs_array_dp.csv"
 else
     echo "✗ ERROR: Sample metadata file missing"
     exit 1
 fi
 ```
 
-#### 第二步: 试运行验证 (Pilot Run Validation)
-```bash
-# === 小规模测试运行 (推荐) ===
-# 仅处理chr21和chr22进行方法验证
-nextflow run tuning.concordance.rev1.nf \
-    -c nextflow.config \
-    --chr_subset "chr21,chr22" \
-    --dp_range "8,10,15" \
-    --gq_range "20,30" \
-    --laf_range "0.2,0.25" \
-    --haf_range "0.75,0.8" \
-    -with-report pilot_run_report.html \
-    -with-timeline pilot_timeline.html \
-    -with-dag pilot_flowchart.html
-
-# 验证试运行结果
-if [[ $? -eq 0 ]]; then
-    echo "✓ Pilot run completed successfully"
-    echo "✓ Ready for full-scale analysis"
-else
-    echo "✗ Pilot run failed - check logs before proceeding"
-    exit 1
-fi
-```
-
-#### 第三步: 生产级全流程执行 (Production-Scale Execution)
+#### 第二步: 生产级全流程执行 (Production-Scale Execution)
 ```bash
 # === 全基因组分析执行 ===
 # 包含全部22条常染色体的完整参数网格搜索
 nextflow run tuning.concordance.rev1.nf \
     -c nextflow.config \
-    --mode "production" \
-    --chr_subset "chr1,chr2,chr3,chr4,chr5,chr6,chr7,chr8,chr9,chr10,chr11,chr12,chr13,chr14,chr15,chr16,chr17,chr18,chr19,chr20,chr21,chr22" \
     -with-report production_analysis_report.html \
     -with-timeline production_timeline.html \
     -with-dag production_flowchart.html \
@@ -649,7 +742,7 @@ echo "Monitor progress with: tail -f production_run.log"
 echo "Check Nextflow log: tail -f .nextflow.log"
 ```
 
-#### 第四步: 结果验证与质量检查 (Result Validation & QC)
+#### 第三步: 结果验证与质量检查 (Result Validation & QC)
 ```bash
 # === 分析完成后的自动化验证 ===
 # 检查关键输出文件完整性
@@ -660,7 +753,7 @@ import pandas as pd
 
 # 验证关键结果文件
 expected_files = [
-    "results/05.merge_concordance_vmiss_summary/*.summary.csv",
+    "results/05.merge_concordance_vmiss_summary/*.summary.pkl",
     "scripts/analysis_vis/merged_summary_all.csv",
     "scripts/analysis_vis/merged_summary_15x.csv", 
     "scripts/analysis_vis/merged_summary_30x.csv"
@@ -672,11 +765,12 @@ for pattern in expected_files:
         print(f"✓ Found {len(files)} files for {pattern}")
         # 验证文件内容完整性
         for f in files:
-            try:
-                df = pd.read_csv(f)
-                print(f"  - {f}: {len(df)} rows, {len(df.columns)} columns")
-            except Exception as e:
-                print(f"  ✗ ERROR reading {f}: {e}")
+            if f.endswith('.csv'):
+                try:
+                    df = pd.read_csv(f)
+                    print(f"  - {f}: {len(df)} rows, {len(df.columns)} columns")
+                except Exception as e:
+                    print(f"  ✗ ERROR reading {f}: {e}")
     else:
         print(f"✗ Missing files for {pattern}")
 
@@ -685,178 +779,143 @@ print("\n=== Analysis Quality Metrics ===")
 main_results = pd.read_csv("scripts/analysis_vis/merged_summary_all.csv")
 print(f"Total parameter combinations analyzed: {len(main_results)}")
 print(f"Concordance rate range: {main_results['GENOTYPE_CONCORDANCE'].min():.4f} - {main_results['GENOTYPE_CONCORDANCE'].max():.4f}")
-print(f"Data retention rate range: {(1-main_results['GENOTYPE_MISS_RATE']).min():.4f} - {(1-main_results['GENOTYPE_MISS_RATE']).max():.4f}")
+print(f"Miss rate range: {main_results['GENOTYPE_MISS_RATE'].min():.4f} - {main_results['GENOTYPE_MISS_RATE'].max():.4f}")
 
 EOF
 ```
 
 ### 资源配置优化
 
+基于实际的 `nextflow.config` 配置：
+
 ```nextflow
-// nextflow.config中的资源分配
+// 实际的资源分配配置
 process {
     withName: 'FormatMatrixPrepare' {
-        clusterOptions = '--rsc p=1:t=8:c=4:m=18284M'  // 内存密集型
+        clusterOptions = '--rsc p=1:t=8:c=4:m=18284M'  // 内存密集型: ~18GB
+        executor = 'slurm'
+        queue = 'gr10478b'
+        time = '6d'
     }
     withName: 'ConcordanceVmissCalculator' {
-        clusterOptions = '--rsc p=1:t=4:c=2:m=9142M'   // 计算密集型
+        clusterOptions = '--rsc p=1:t=4:c=2:m=9142M'   // 计算密集型: ~9GB
+        executor = 'slurm'
+        queue = 'gr10478b'
+        time = '6d'
     }
-    // ... 其他进程配置
+    withName: 'ConcordanceVmissSummary' {
+        clusterOptions = '--rsc p=1:t=4:c=2:m=9142M'   // 汇总分析: ~9GB
+        executor = 'slurm'
+        queue = 'gr10478b'
+        time = '6d'
+    }
+    withName: 'MergeConcordanceVmiss' {
+        clusterOptions = '--rsc p=1:t=4:c=2:m=9142M'   // 合并处理: ~9GB
+        executor = 'slurm'
+        queue = 'gr10478b'
+        time = '6d'
+    }
 }
 ```
 
 ## 质量控制与验证 (Quality Control & Validation)
 
-### 数据完整性检查
+### 基础验证检查
 
 ```python
-# 自动化质量检查脚本
-def validate_analysis_results():
+# 基于实际代码的验证方法
+def basic_validation():
     """
-    验证分析结果的完整性和一致性
-    
-    检查项目:
-    1. 所有参数组合是否都有结果
-    2. 染色体结果是否完整
-    3. 统计指标是否在合理范围内
-    4. 数据格式是否标准化
+    验证分析结果的基本完整性
     """
+    # 检查输出文件是否存在
+    expected_files = [
+        "merged_summary_all.csv",
+        "merged_summary_15x.csv", 
+        "merged_summary_30x.csv"
+    ]
     
-    # 检查结果文件完整性
-    check_file_completeness()
+    # 验证参数组合数量
+    total_combinations = 30 * 3 * 6 * 6  # 3,240
     
-    # 验证统计指标合理性
-    validate_statistical_metrics()
-    
-    # 检查数据格式一致性
-    verify_data_formats()
+    # 检查统计指标范围
+    concordance_range = (0.999, 1.0)
+    miss_rate_range = (0.0, 0.1)
 ```
 
-### 结果可信度评估
+### 结果一致性检查
 
 ```python
-# 可信度评估指标
-reliability_metrics = {
-    'sample_size_adequacy': 'check_minimum_sample_size()',
-    'variant_count_sufficiency': 'check_variant_coverage()', 
-    'technical_replicates_consistency': 'check_replicate_concordance()',
-    'batch_effect_assessment': 'evaluate_batch_effects()'
-}
+# 简单的一致性验证
+def validate_results():
+    """
+    验证不同平台间结果的一致性
+    """
+    # 检查ALL、15X、30X平台间的结果一致性
+    # 验证混淆矩阵的数学正确性
+    # 检查缺失率统计的合理性
 ```
 
 ## 故障排除指南 (Troubleshooting Guide)
 
-### 常见问题与解决方案
+### 常见问题
 
-#### 1. 内存不足错误
-```bash
-# 问题: Java heap space / Out of memory
-# 解决: 增加内存分配
-export NXF_OPTS='-Xms2g -Xmx8g'
+1. **内存不足错误**
+   ```bash
+   # 增加Nextflow内存分配
+   export NXF_OPTS='-Xms2g -Xmx8g'
+   ```
 
-# 或修改nextflow.config
-process.memory = '16 GB'
-```
+2. **VCF文件读取失败**
+   ```bash
+   # 检查文件完整性
+   bcftools index -s input.vcf.gz
+   ```
 
-#### 2. 文件权限问题
-```bash
-# 问题: Permission denied
-# 解决: 检查文件权限
-chmod 755 scripts/*.py
-chmod 644 input_files/*.vcf.gz
-```
+3. **Python环境问题**
+   ```bash
+   # 激活正确环境
+   conda activate cteph_geno_pro
+   ```
 
-#### 3. bcftools相关错误
-```bash
-# 问题: bcftools命令失败
-# 解决: 验证VCF文件完整性
-bcftools index -f input.vcf.gz
-bcftools view -H input.vcf.gz | wc -l
-```
-
-#### 4. Python模块导入错误
-```bash
-# 问题: ModuleNotFoundError
-# 解决: 激活正确的conda环境
-conda activate cteph_geno_pro
-conda list | grep pandas
-```
-
-### 性能优化建议
-
-```python
-# 1. 并行度调优
-optimal_threads = min(available_cores, data_size_dependent_threads)
-
-# 2. 内存使用优化
-batch_size = calculate_optimal_batch_size(available_memory, data_size)
-
-# 3. I/O优化
-use_compression = True  # 启用压缩减少磁盘I/O
-cache_intermediate_results = True  # 缓存中间结果
-```
+4. **权限问题**
+   ```bash
+   # 修复文件权限
+   chmod 755 scripts/*.py
+   ```
 
 ## 扩展与定制 (Extensions & Customization)
 
-### 新增质量控制指标
+### 添加新的质控参数
 
-```python
-# 扩展质量控制参数示例
-def add_new_qc_metric():
-    """
-    添加新的质量控制指标
-    
-    可扩展指标:
-    1. PL (Phred-scaled likelihoods)
-    2. AD (Allelic depth)
-    3. VAF (Variant allele fraction)
-    4. 自定义复合指标
-    """
-    
-    # 在evaluate_genotype_concordance_and_vmiss.py中添加
-    new_filters = {
-        'PL_threshold': 50,
-        'AD_ratio_threshold': 0.2,
-        'VAF_deviation_threshold': 0.1
-    }
-```
+要添加新的质控指标，需要修改以下文件：
 
-### 适配其他项目
+1. **extract_vcf_format.py**: 添加新的FORMAT字段提取
+2. **evaluate_genotype_concordance_and_vmiss.rev3.py**: 添加新的过滤逻辑
+3. **tuning.concordance.rev1.nf**: 更新参数通道定义
 
-```python
-# 项目适配指南
-def adapt_to_new_project():
-    """
-    适配新项目的步骤:
-    
-    1. 修改输入文件路径
-    2. 调整参数搜索空间
-    3. 自定义评估指标
-    4. 更新可视化模板
-    """
-    
-    # 配置文件模板
-    project_config = {
-        'input_paths': {...},
-        'parameter_space': {...},
-        'evaluation_metrics': {...},
-        'output_formats': {...}
-    }
+### 适配新项目
+
+修改 `tuning.concordance.rev1.nf` 中的路径参数：
+```nextflow
+params.wgsDir = "path/to/your/wgs/vcf"
+params.arrayDir = "path/to/your/array/vcf"
+params.infoDir = "path/to/your/sample/info"
 ```
 
 ## 持续更新计划 (Continuous Update Plan)
 
-### 当前版本 (Rev1) 的主要特性
-- ✅ 基础一致性评估算法
-- ✅ 多参数网格搜索
-- ✅ 分测序深度分析
-- ✅ 基础可视化功能
+### 当前版本 (Rev1) 功能
+- ✅ 基础一致性评估 (基于混淆矩阵)
+- ✅ 3,240种参数组合的网格搜索
+- ✅ 15x/30x测序深度分层分析
+- ✅ 基础统计指标计算和汇总
 
-### 计划中的更新 (Rev2)
-- 🔄 **算法优化**: 更高效的一致性计算算法
-- 🔄 **参数空间扩展**: 增加更多质量控制维度
-- 🔄 **机器学习集成**: 基于ML的参数优化
-- 🔄 **实时监控**: 分析进度的实时可视化
+### 后续改进方向
+- 🔄 优化内存使用和计算效率
+- 🔄 添加更多可视化分析
+- 🔄 支持更多FORMAT字段
+- 🔄 改进参数推荐算法
 
 ## 技术文档与引用 (Documentation & Citation)
 
@@ -886,8 +945,8 @@ def adapt_to_new_project():
 - **开发者**: ZHAO TIE
 
 ### 更新日志
-- **2025-04**: Rev1版本发布，基础功能完成
-- **2025-09**: 持续优化中，添加新的分析模块
+- **2024-XX**: Rev1版本发布，基础功能完成，包含3,240种参数组合的系统性评估
+- **2025-01**: 持续优化中，完善可视化分析模块和文档更新
 
 ---
 

@@ -172,7 +172,7 @@ def extract_ld_from_tommo_for_focus_loci(
     with open(output_pkl_path, "wb") as f:
         pickle.dump(result, f)
 
-    return output_pkl_path, pd.DataFrame(log_records)
+    return output_pkl_path, pd.DataFrame(log_records) # type: ignore
 
 
 
@@ -553,7 +553,7 @@ def compute_ld_between_focus_and_tommo_linked_variants(
     with open(output_path, "wb") as f:
         pickle.dump(result_dict, f)
 
-    return output_path
+    return output_path # type: ignore
 
 
 # ===================== 提升为模块级函数: process_focus_id =====================
@@ -804,7 +804,7 @@ def merge_tommo_and_focus_ld_dict(
     output_path = os.path.abspath("merged_tommo_focus_ld.pkl")
     with open(output_path, "wb") as f:
         pickle.dump(merged_dict, f)
-    return output_path
+    return output_path # type: ignore
 
 
 
