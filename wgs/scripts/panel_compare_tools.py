@@ -61,6 +61,51 @@ from typing import Dict, Tuple, Iterable
 import shutil
 import time
 
+# ==== Unified MAF grouping (single source of truth) ====
+# Definition (do not change without auditing all downstream consumers):
+#   rare    : MAF < 0.01
+#   lowfreq : 0.01 <= MAF <= 0.05
+#   common  : MAF > 0.05
+# NOTE: We intentionally do NOT clamp values to [0,1] here, to avoid silently
+# changing legacy behavior; we only coerce to numeric with NaN on failures.
+
+def assign_maf_group(maf_series):
+    """
+    Assign MAF groups with consistent boundaries, returning a pandas Series
+    with values in {"rare", "lowfreq", "common"} or <NA> when not classifiable.
+    Boundaries:
+      - 'rare'    : value < 0.01
+      - 'lowfreq' : 0.01 <= value <= 0.05
+      - 'common'  : value > 0.05
+    Only converts to numeric (errors='coerce'); does not clip negative/>1 values.
+    """
+    import pandas as _pd
+    s = _pd.to_numeric(maf_series, errors='coerce')
+    out = _pd.Series(_pd.NA, index=s.index, dtype='object')
+    out = out.mask(s < 0.01, 'rare')
+    out = out.mask((s >= 0.01) & (s <= 0.05), 'lowfreq')
+    out = out.mask(s > 0.05, 'common')
+    return out
+
+
+def validate_grouping_counts(maf_series):
+    """Lightweight diagnostic: return counts per group for quick sanity checks."""
+    import pandas as _pd
+    s = _pd.to_numeric(maf_series, errors='coerce')
+    g = assign_maf_group(s)
+    total = int(s.notna().sum())
+    rare = int((g == 'rare').sum())
+    lowf = int((g == 'lowfreq').sum())
+    comm = int((g == 'common').sum())
+    return {
+        'total_non_nan': total,
+        'rare': rare,
+        'lowfreq': lowf,
+        'common': comm,
+        'ungrouped_non_nan': total - (rare + lowf + comm),
+    }
+
+
 
 def run_plink2_variant_qc_with_tommo(
     variant_qc_summary: str,
@@ -144,12 +189,12 @@ def run_plink2_variant_qc_with_tommo(
         chrom, pos, ref, alt = parts[0], parts[1], parts[2], parts[3]
         return chrom, int(pos), ref, alt
 
-    def _run_cmd(cmd_list: Iterable[str], stdout_path: str = None) -> int:
+    def _run_cmd(cmd_list: Iterable[str], stdout_path: str = None) -> int: # type: ignore
         if stdout_path is None:
             proc = subprocess.run(cmd_list, check=False)
         else:
             with open(stdout_path, "wb") as fo:
-                proc = subprocess.run(cmd_list, check=False, stdout=fo)
+                proc = subprocess.run(cmd_list, check=False, stdout=fo) # type: ignore
         return proc.returncode
 
     # 1) 临时工作目录 & 输出路径
@@ -597,10 +642,11 @@ def plot_tommo_panel_compare_pdf(
     # 规范 TOMMO_FILTER，大写并将缺失视为非 PASS
     df['TOMMO_FILTER'] = df['TOMMO_FILTER'].astype(str).str.upper()
 
-    # 基于 CTRL_MAF 的三组划分（NaN 将被排除出三组统计）
-    rare = df[df['CTRL_MAF'] < 0.01].copy()
-    lowf = df[(df['CTRL_MAF'] >= 0.01) & (df['CTRL_MAF'] <= 0.05)].copy()
-    comm = df[df['CTRL_MAF'] > 0.05].copy()
+    # 基于 CTRL_MAF 的三组划分（统一助手，NaN 不计入）
+    df['__GROUP__'] = assign_maf_group(df['CTRL_MAF'])
+    rare = df[df['__GROUP__'] == 'rare'].copy()
+    lowf = df[df['__GROUP__'] == 'lowfreq'].copy()
+    comm = df[df['__GROUP__'] == 'common'].copy()
 
     groups = [
         ("Rare Variant (<0.01)", rare),
@@ -741,7 +787,7 @@ def plot_tommo_panel_compare_pdf(
         titles_page3_all = []
 
         # 复用已有的 SNP/InDel 判别函数
-        def _classify_variant_type_from_vid(series_vid):
+        def _classify_variant_type_from_vid(series_vid): # type: ignore
             """根据 VARIANT_ID( CHROM:POS:REF:ALT ) 判断变异类型。
             - 若 REF 和 ALT 均为单碱基且属于 {A,T,C,G} → 'SNP'
             - 否则 → 'InDel'
@@ -945,7 +991,7 @@ def build_grouped_variant_tables(
     ====================================
     【功能】
     以 `run_plink2_variant_qc_with_tommo` 的输出（*.variant_qc_with_tommo.tsv）为输入，
-    按 CTRL_MAF 将变体划分为三个**主分组**（Rare/LowFreq/Common），并在每个主分组内
+    按 CTRL_MAF 使用统一 assign_maf_group() 将变体划分为三个**主分组**（rare<0.01；lowfreq 0.01–0.05（含）；common>0.05），并在每个主分组内
     进一步细分 **3 个亚分组**：
       a) TOMMO 中无记录（IN_TOMMO==False）
       b) TOMMO 中有记录，但 TOMMO_FILTER != 'PASS'
@@ -1011,15 +1057,6 @@ def build_grouped_variant_tables(
         return s.map(lambda x: True if x in (True, 1, '1', 'True', 'TRUE')
                      else (False if x in (False, 0, '0', 'False', 'FALSE') else pd.NA))
 
-    def _assign_main_group(ctrl_maf: pd.Series) -> pd.Series:
-        """返回主分组标签：'rare'/'lowfreq'/'common'，其它为 NaN（丢弃）。"""
-        s = pd.to_numeric(ctrl_maf, errors='coerce')
-        labels = pd.Series(pd.NA, index=s.index, dtype='object')
-        labels = labels.mask(s < 0.01, 'rare')
-        labels = labels.mask((s >= 0.01) & (s <= 0.05), 'lowfreq')
-        labels = labels.mask(s > 0.05, 'common')
-        return labels
-
     def _assign_subgroup(in_tommo: pd.Series, tommo_filter: pd.Series) -> pd.Series:
         tf = tommo_filter.astype(str).str.upper()
         it = _normalize_bool_series(in_tommo)
@@ -1046,7 +1083,7 @@ def build_grouped_variant_tables(
 
     def _first_pass_chunk(chunk: pd.DataFrame) -> Dict[str, np.ndarray]:
         """工作线程：从一个分块中提取 (c_in_pass) 的 DIFF，按主分组返回数组。磁盘写入在主线程完成。"""
-        mg = _assign_main_group(chunk['CTRL_MAF'])
+        mg = assign_maf_group(chunk['CTRL_MAF'])
         sg = _assign_subgroup(chunk['IN_TOMMO'], chunk['TOMMO_FILTER'])
         # 仅 (c) 组且两列可数值化
         mask_c = (sg == 'c_in_pass') & chunk['CTRL_AAF'].notna() & chunk['TOMMO_AAF'].notna()
@@ -1060,7 +1097,7 @@ def build_grouped_variant_tables(
         for gname in ('rare', 'lowfreq', 'common'):
             idx = (mg[mask_c] == gname)
             if idx.any():
-                vals = csub.loc[idx.values, 'DIFF'].dropna().to_numpy(dtype='float64')
+                vals = csub.loc[idx.values, 'DIFF'].dropna().to_numpy(dtype='float64') # type: ignore
             else:
                 vals = np.array([], dtype='float64')
             out[gname] = vals
@@ -1135,7 +1172,7 @@ def build_grouped_variant_tables(
         for col in ['CTRL_AAF','TOMMO_AAF','CTRL_MAF']:
             if col in chunk.columns:
                 chunk[col] = pd.to_numeric(chunk[col], errors='coerce')
-        mg = _assign_main_group(chunk['CTRL_MAF'])
+        mg = assign_maf_group(chunk['CTRL_MAF'])
         sg = _assign_subgroup(chunk['IN_TOMMO'], chunk['TOMMO_FILTER'])
         diff = (chunk['CTRL_AAF'] - chunk['TOMMO_AAF']).astype('float64')
 
@@ -1629,7 +1666,7 @@ def plot_c_in_pass_threshold_tradeoff(
 
             # === 使用 KneeLocator 寻找拐点 ===
             # 允许为不同主分组指定 weight_y
-            wy = knee_weight_y_map.get(mg_key, knee_weight_y) if knee_weight_y_map else knee_weight_y
+            wy = knee_weight_y_map.get(mg_key, knee_weight_y) if knee_weight_y_map else knee_weight_y # type: ignore
             knee_idx = None
             knee_x = knee_y = None
             knee_thr = None
@@ -1927,7 +1964,7 @@ def summarize_variants_filter_from_manifest(
     读取 `manifest.json`（由 build_grouped_variant_tables/summarize_c_in_pass_thresholds/plot_c_in_pass_threshold_tradeoff 产生）
     中的 `input` 表路径，按用户指定逻辑生成一个 **summary 表**：
       - 列：VARIANT_ID, GROUP, IN_TOMMO, PASS_TOMMO, PASS_GROUP_ROBUST_Z_FILTER, FILTER_STAT
-      - GROUP：基于 CTRL_MAF 分组：rare(<0.01)、lowfreq(0.01~0.05)、common(>0.05)
+      - GROUP：基于 CTRL_MAF，使用 assign_maf_group()：rare(<0.01)、lowfreq(0.01–0.05，含 0.05)、common(>0.05)
       - IN_TOMMO：来自 input 的 IN_TOMMO
       - PASS_TOMMO：来自 input 的 TOMMO_FILTER（NaN 保持 NaN；'PASS'→True；其它→False）
       - PASS_GROUP_ROBUST_Z_FILTER：仅当 IN_TOMMO 和 PASS_TOMMO 同时为 True 时才评估；
@@ -2023,15 +2060,6 @@ def summarize_variants_filter_from_manifest(
     counts = defaultdict(int)  # key: (GROUP, FILTER_STAT)
     counts_lock = threading.Lock()
 
-    # GROUP 由 CTRL_MAF 决定
-    def _assign_group_from_ctrl_maf(arr: pd.Series) -> pd.Series:
-        x = pd.to_numeric(arr, errors='coerce')
-        out = pd.Series(pd.NA, index=x.index, dtype='object')
-        out = out.mask(x < 0.01, 'rare')
-        out = out.mask((x >= 0.01) & (x <= 0.05), 'lowfreq')
-        out = out.mask(x > 0.05, 'common')
-        return out
-
     def _pass_tommo_from_filter(s: pd.Series) -> pd.Series:
         # NaN 保持 NaN；PASS→True；其它→False
         tf = s.astype('string')
@@ -2045,7 +2073,7 @@ def summarize_variants_filter_from_manifest(
     def _process_chunk(chunk: pd.DataFrame):
         sub = pd.DataFrame(index=chunk.index)
         sub['VARIANT_ID'] = chunk['VARIANT_ID'].astype('string')
-        sub['GROUP'] = _assign_group_from_ctrl_maf(chunk['CTRL_MAF'])
+        sub['GROUP'] = assign_maf_group(chunk['CTRL_MAF'])
         # IN_TOMMO → 归一化为布尔/NA
         s_in = chunk['IN_TOMMO']
         sub['IN_TOMMO'] = s_in.map(lambda x: True if x in (True, 1, '1', 'True', 'TRUE') else (False if x in (False, 0, '0', 'False', 'FALSE') else pd.NA))
@@ -2171,7 +2199,7 @@ def summarize_variants_filter_from_manifest(
 
     # 投递哨兵，通知所有 worker 退出
     for _ in range(max_workers):
-        q.put(None)
+        q.put(None) # type: ignore
     q.join()  # 等待所有任务完成
 
     # 汇总计数
@@ -2235,7 +2263,7 @@ def summarize_variants_filter_from_manifest(
     dt = time.time() - t0
     print(f"[summary] 耗时: {dt/60:.2f} min; 输出: {out_summary}; 统计: {out_stats}")
 
-    return out_summary
+    return out_summary # type: ignore
 
 
 def filter_variants_by_group_and_stat(
@@ -2412,7 +2440,7 @@ def filter_variants_by_group_and_stat(
         q.put(chunk)
 
     for _ in workers:
-        q.put(stop)
+        q.put(stop) # type: ignore
     q.join()
     for t in workers:
         t.join()
@@ -2590,7 +2618,7 @@ def subset_plink_by_selected_variants(
             if buf:
                 q.put(buf)
         for _ in workers:
-            q.put(stop)
+            q.put(stop) # type: ignore
         q.join()
         for t in workers:
             t.join()

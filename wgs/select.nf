@@ -727,7 +727,7 @@ process ToMMoPanelThr {
     python ${params.scriptDir}/panel_thr_main.py \
         --variant_qc_with_tommo ${variant_qc_with_tommo} \
         --chunk_size 500000 \
-        --knee_weight_y_map '{"rare": 1.0, "lowfreq": 4.0, "common": 4.0}'
+        --knee_weight_y_map '{"rare": 1.0, "lowfreq": 1.0, "common": 1.0}'
     """
 }
 
