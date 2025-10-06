@@ -1,0 +1,33 @@
+{
+  "mix": {
+    "VMISS": 0.05
+  },
+  "dp": {
+    "Rare Variant (<0.01)": {
+      "15X_VMISS": 0.05,
+      "30X_VMISS": 0.05
+    },
+    "Low Frequency Variant (0.01~0.05)": {
+      "15X_VMISS": 0.05,
+      "30X_VMISS": 0.05
+    },
+    "Common Variant (>0.05)": {
+      "15X_VMISS": 0.05,
+      "30X_VMISS": 0.05
+    }
+  },
+  "case_ctrl": {
+    "Rare Variant (<0.01)": {
+      "CTRL_VMISS": 0.05,
+      "CASE_VMISS": 0.05
+    },
+    "Low Frequency Variant (0.01~0.05)": {
+      "CTRL_VMISS": 0.05,
+      "CASE_VMISS": 0.05
+    },
+    "Common Variant (>0.05)": {
+      "CTRL_VMISS": 0.05,
+      "CASE_VMISS": 0.05
+    }
+  }
+}
