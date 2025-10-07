@@ -368,7 +368,7 @@ def run_plink2_variant_qc(
 
 
     chunk_files = []
-    reader = pd.read_csv(out_all + ".afreq", sep=r"\s+", chunksize=100000)
+    reader = pd.read_csv(out_all + ".afreq", sep=r"\s+", chunksize=100000) # 每10万行一个chunk
     with concurrent.futures.ProcessPoolExecutor(
         max_workers=4,
         initializer=init_globals_for_chunk,
