@@ -6,8 +6,8 @@
     "plink": 8
   },
   "totals": {
-    "variants_bim": 5677100,
-    "samples_fam": 3017
+    "variants_bim": 5314835,
+    "samples_fam": 3018
   },
   "request": {
     "variants": 5,
