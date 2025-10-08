@@ -418,7 +418,14 @@ def plot_vmiss_scatter_by_maf_category(
     mode: str = "dp",  # "dp" or "case_ctrl"
     variant_id_col: str = "VARIANT_ID",
     output_tsv: str = "vmiss_pass_variants.tsv",
-    output_prefix: str = "cteph_agp3k"
+    output_prefix: str = "cteph_agp3k",
+    plot_style: str = "hex",          # "hex" | "hist2d" | "scatter" | "kde2d" | "density"
+    gridsize: int = 75,               # hexbin 网格密度（越大越细）
+    hist_bins: int = 75,              # hist2d 的分箱数
+    density_norm: str = "log",        # "log" or "linear" 颜色归一化
+    bw_adjust: float = 1.0,           # KDE 平滑程度（越大越平滑）
+    density_thresh: float = 0.02,     # density风格下的最小显示阈值（0~1，相对密度）
+    overlay_points: bool = False      # 是否在密度图上叠加半透明小散点
 ) -> str:
     """
     【已重载为 VMISS 版本】
@@ -441,6 +448,20 @@ def plot_vmiss_scatter_by_maf_category(
         输出通过阈值（双向都通过）的变体 ID 列表文件路径。
     output_prefix : str
         输出图文件前缀；将保存为 `{output_prefix}.vmiss.{mode}.png`。
+    plot_style : {"hex","hist2d","scatter","kde2d","density"}
+        控制主面板点的呈现方式，默认 "hex"（六边形密度），可有效缓解过密覆盖问题。
+    gridsize : int
+        当 plot_style="hex" 时的六边形网格密度。
+    hist_bins : int
+        当 plot_style="hist2d" 时的二维直方图分箱数。
+    density_norm : {"log","linear"}
+        密度着色的归一化方式；数目跨度大时推荐 "log"。
+    bw_adjust : float
+        仅在 "kde2d"/"density" 风格下生效，控制核密度平滑程度（>1 更平滑）。
+    density_thresh : float
+        仅在 "density" 风格下生效，控制最小等高线显示阈值（避免过稀区域完全不可见）。
+    overlay_points : bool
+        为 True 时，在密度图上叠加少量半透明散点以增强边缘感知。
 
     返回
     ----
@@ -453,6 +474,7 @@ def plot_vmiss_scatter_by_maf_category(
     import matplotlib.gridspec as gridspec
     from mpl_toolkits.axes_grid1.inset_locator import inset_axes
     import seaborn as sns  # 仅用于KDE，可选；若未安装，请注释相应KDE代码
+    from matplotlib.colors import LogNorm, LinearSegmentedColormap, to_rgba
 
     # ---------- 基本检查 ----------
     if mode not in {"dp", "case_ctrl"}:
@@ -513,6 +535,17 @@ def plot_vmiss_scatter_by_maf_category(
     summary_rows = []
     pass_mask_global = pd.Series(False, index=df.index)
 
+    def _make_density_cmap(base_hex: str) -> LinearSegmentedColormap:
+        """
+        基于分类颜色生成密度图渐变色（由浅至深、带透明度），增强对比但保留低密度可见。
+        """
+        # 提高整体起始不透明度，同时拉大分段差距
+        c0 = to_rgba(base_hex, 0.15)   # 最浅端：明确可见
+        c1 = to_rgba(base_hex, 0.40)   # 浅
+        c2 = to_rgba(base_hex, 0.80)   # 中深
+        c3 = to_rgba(base_hex, 1.00)   # 最深
+        return LinearSegmentedColormap.from_list("density_" + base_hex, [c0, c1, c2, c3])
+
 
     def plot_one(ax_main, ax_top, ax_right, sub_df, label, color, thr_x, thr_y):
         # x/y 即 VMISS（0~1），阈值解释为 "≤ 阈值 通过"
@@ -531,11 +564,66 @@ def plot_vmiss_scatter_by_maf_category(
         q_fail_y = ((x_raw <= thr_x) & (y_raw > thr_y)).sum()
         q_fail_both = ((x_raw > thr_x) & (y_raw > thr_y)).sum()
 
-        # ---- 散点图（始终线性坐标） ----
+        # ---- 主面板可视化（根据 plot_style 切换） ----
         x = pd.to_numeric(x_raw, errors="coerce")
         y = pd.to_numeric(y_raw, errors="coerce")
         valid = x.notna() & y.notna()
-        ax_main.scatter(x[valid], y[valid], alpha=0.3, c=color, s=20)
+        xv = x[valid]
+        yv = y[valid]
+
+        # 针对当前类别颜色生成专属密度 colormap
+        cmap_local = _make_density_cmap(color)
+        # 颜色归一化
+        norm_obj = LogNorm(vmin=1) if density_norm == "log" else None
+
+        if plot_style == "hex":
+            hb = ax_main.hexbin(
+                xv, yv,
+                extent=[0, 1, 0, 1],
+                gridsize=gridsize,
+                mincnt=1,
+                linewidths=0,
+                norm=norm_obj,
+                cmap=cmap_local
+            )
+        elif plot_style == "hist2d":
+            h = ax_main.hist2d(
+                xv, yv,
+                bins=hist_bins,
+                range=[[0, 1], [0, 1]],
+                norm=norm_obj,
+                cmap=cmap_local
+            )
+        elif plot_style == "density":
+            # Tableau-like 密度风格：连续填色、无等高线、较高 levels、阈值裁剪
+            sns.kdeplot(
+                x=xv, y=yv,
+                ax=ax_main,
+                fill=True,
+                thresh=density_thresh,    # 避免极稀薄区域完全不可见
+                levels=100,               # 更平滑的连续密度
+                bw_adjust=bw_adjust,
+                cmap=cmap_local,
+                linewidths=0
+            )
+            if overlay_points:
+                ax_main.scatter(xv, yv, alpha=0.05, c=color, s=2, linewidths=0)
+        elif plot_style == "kde2d":
+            # 传统二维 KDE：带等高线
+            sns.kdeplot(
+                x=xv, y=yv,
+                ax=ax_main,
+                fill=True,
+                thresh=0,
+                levels=30,
+                bw_adjust=bw_adjust,
+                cmap=cmap_local,
+                linewidths=0.8
+            )
+        else:  # "scatter"
+            ax_main.scatter(xv, yv, alpha=0.1, c=color, s=5)
+
+        # 阈值线与坐标
         ax_main.axvline(x=thr_x, color='red', linestyle='--')
         ax_main.axhline(y=thr_y, color='blue', linestyle='--')
         ax_main.set_xlim(0, 1)

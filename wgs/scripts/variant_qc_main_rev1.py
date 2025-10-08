@@ -148,6 +148,9 @@ def main():
                 variant_qc_summary=variant_qc_summary,
                 vmiss_json_path=args.vmiss_json_path,
                 mode=args.vmiss_mode,
+                plot_style="hex",  # 可选：'hex', 'hist2d', 'kde2d'
+                density_norm="log",  # 可选：'log', 'linear'
+                output_prefix=args.output_prefix,
             )
             logger.info("VMISS 通过变体（%s 模式）导出路径：%s", args.vmiss_mode, pass_vmiss_path)
 
@@ -163,6 +166,7 @@ def main():
             pass_vmiss_path = plot_vmiss_distribution_by_maf_category(
                 variant_qc_summary=variant_qc_summary,
                 vmiss_threshold=vmiss_threshold,
+                output_prefix=args.output_prefix,
             )
             logger.info("VMISS 通过变体（mix 模式）导出路径：%s", pass_vmiss_path)
         else:
@@ -180,6 +184,7 @@ def main():
         pass_hwe_path = plot_hwe_scatter_by_maf_category(
             variant_qc_summary=variant_qc_summary,
             hwe_thresholds=hwe_thresholds,
+            output_prefix=args.output_prefix,
         )
         logger.info("HWE 通过变体导出路径：%s", pass_hwe_path)
     except Exception as e:

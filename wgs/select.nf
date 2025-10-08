@@ -454,7 +454,7 @@ process RunVariantQC {
     tuple file(bed), file(bim), file(fam) from rm_maf0_vmiss1_out
 
     output:
-    file('*.pdf')
+    // file('*.pdf')
     file('*.png')
     file('*.log')
     tuple file('vmiss_pass_variants.tsv'), file('hwe_pass_variants.tsv'), file('pass_variants.tsv') into pass_variants_out
@@ -464,15 +464,17 @@ process RunVariantQC {
     bed_prefix = bed.baseName
     """
     source activate cteph_geno_pro
-    python ${params.scriptDir}/variant_qc_main.py \
+    python ${params.scriptDir}/variant_qc_main_rev1.py \
+        --threads 16 \
+        --info_path ${params.infoPath}/cteph_agp3k_jhrpv4.rev1.xlsx \
         --script_path ${params.scriptDir} \
         --bed_prefix ${bed_prefix} \
         --output_prefix cteph_agp3k.sqc.vqc \
-        --threads 32 \
-        --vmiss_threshold 0.04 \
+        --vmiss_json_path ${params.scriptDir}/vmiss.json \
+        --vmiss_mode dp \
         --hwe_json ${params.scriptDir}/hwe.json
     """
-    }
+}
 
 process RunPCA {
     executor 'slurm'
