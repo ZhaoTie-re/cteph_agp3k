@@ -1,3 +1,65 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+VCF INFO 字段过滤工具
+===================
+
+本模块提供了基于 bcftools 的高效 VCF 文件 INFO 字段过滤功能，专门针对大型基因组数据设计。
+
+主要功能
+--------
+1. **INFO 字段过滤**: 根据指定的 INFO 字段值过滤 VCF 变异位点
+2. **染色体前缀标准化**: 自动检测并统一 'chr' 前缀格式
+3. **多种匹配模式**: 支持精确匹配、包含匹配和正则匹配
+4. **并行处理**: 利用多线程加速压缩和处理
+5. **自动索引**: 输出文件自动创建 tabix 索引
+
+使用场景
+--------
+- 过滤高影响或中等影响的变异 (SnpEff 注释结果)
+- 根据功能注释筛选特定类型变异
+- 批量处理大型 WGS/WES 数据集
+- 为关联性分析准备特定子集数据
+
+性能特点
+--------
+- 直接处理 bgzip 压缩的 VCF 文件，无需解压
+- 使用 bcftools 原生过滤，内存占用小
+- 支持多线程并行压缩
+- 原子操作保证文件完整性
+
+依赖工具
+--------
+- bcftools: VCF 文件操作和过滤
+- tabix: VCF 文件索引
+- bgzip: 文件压缩
+
+典型用法示例
+-----------
+```python
+from info_filter_tools import filter_vcf_by_info
+
+# 过滤高影响和中等影响的变异
+output_path = filter_vcf_by_info(
+    vcf_path="input.vcf.gz",
+    info_key="impact",
+    values=["HIGH", "MODERATE"],
+    out_prefix="filtered_variants"
+)
+
+# 使用正则表达式匹配
+output_path = filter_vcf_by_info(
+    vcf_path="input.vcf.gz",
+    info_key="consequence",
+    values="missense.*",
+    match_mode="regex"
+)
+```
+
+作者: ZHAO TIE
+日期: 2025-10-14
+"""
+
 import os
 import shlex
 import subprocess
@@ -6,6 +68,7 @@ import difflib
 from typing import Iterable, List, Optional, Union
 import logging
 from datetime import datetime
+import tempfile
 
 
 # Helper: collect INFO IDs from VCF header using bcftools
@@ -34,6 +97,38 @@ def _collect_info_ids_from_header(vcf_path: str, bcftools_path: str) -> set:
     return info_ids
 
 
+def _detect_chr_prefix(vcf_path: str, bcftools_path: str, sample_lines: int = 200) -> Optional[bool]:
+    """检测 VCF 的 CHROM 是否带有 'chr' 前缀。
+    返回值: True 表示带有前缀；False 表示不带前缀；None 表示无法判断（例如没有变体行）。
+    说明：为了避免读取全文件，这里仅采样前若干变体行进行判断。
+    """
+    try:
+        # 输出体（非头部）若干行进行判断
+        # -H 仅输出变体行；这里不加区域限制，直接采样前 sample_lines 行
+        cmd = [bcftools_path, "view", "-H", vcf_path]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, text=True)
+        has_chr = None
+        cnt = 0
+        if proc.stdout is None:
+            return None
+        for line in proc.stdout:
+            if not line.strip():
+                continue
+            chrom = line.split("\t", 1)[0]
+            if chrom.startswith("#"):
+                # 保险判断：如果有异常行
+                continue
+            has_chr = chrom.startswith("chr")
+            cnt += 1
+            if cnt >= sample_lines:
+                break
+        proc.stdout.close()
+        proc.wait()
+        return has_chr
+    except Exception:
+        return None
+
+
 def filter_vcf_by_info(
     vcf_path: str = "cteph_agp3k.rare.all.nochr.norm.chrprefix.snpeff.vcf.gz",
     *,
@@ -43,6 +138,8 @@ def filter_vcf_by_info(
     values: Union[str, Iterable[str]] = ("HIGH", "MODERATE"),
     logic: str = "any",
     match_mode: str = "exact",
+    check_chr_prefix: bool = False,
+    keep_chr_prefix: bool = False,
     threads: int = 8,
     out_prefix: Optional[str] = None,
     out_dir: Optional[str] = os.getcwd(),
@@ -69,6 +166,10 @@ def filter_vcf_by_info(
         多值时的逻辑，"any" 表示 OR，"all" 表示 AND（极少用）。
     match_mode : {"exact", "contains", "regex"}
         匹配方式。exact 使用等号匹配；contains 使用正则子串匹配；regex 完全按传入值当作正则。
+    check_chr_prefix : bool
+        是否检查并根据需要统一 CHROM 的 'chr' 前缀（默认 False）。为 True 时先探测输入的染色体命名风格，然后视 keep_chr_prefix 决定是否用 bcftools annotate --rename-chrs 进行标准化。
+    keep_chr_prefix : bool
+        仅当 check_chr_prefix=True 生效。若输入带有 'chr' 前缀且 keep_chr_prefix=False，则去掉前缀（chr1→1, chrX→X, chrY→Y, chrM→M）。若输入不带 'chr' 前缀且 keep_chr_prefix=True，则添加前缀（1→chr1, X→chrX, Y→chrY, M→chrM）。其他情况不做修改。
     threads : int
         压缩线程数（传给 bcftools 的 --threads，用于并行 bgzip 压缩）。
     out_prefix : Optional[str]
@@ -127,6 +228,90 @@ def filter_vcf_by_info(
     logger.info(f"取值: {values}")
     logger.info(f"逻辑: {logic}, 匹配模式: {match_mode}")
     logger.info(f"线程数: {threads}")
+    logger.info(f"check_chr_prefix: {check_chr_prefix}, keep_chr_prefix: {keep_chr_prefix}")
+
+    # ---------- （可选）统一 CHROM 前缀 ----------
+    normalized_vcf_path = vcf_path
+    tmp_map_file = None
+    tmp_norm_vcf = None
+
+    if check_chr_prefix:
+        detected = _detect_chr_prefix(vcf_path, bcftools_path)
+        logger.info(f"CHROM 前缀探测结果: {detected} (True=带有 'chr', False=不带, None=无法判断)")
+        action = None
+        if detected is True and not keep_chr_prefix:
+            action = "remove_chr_prefix"
+        elif detected is False and keep_chr_prefix:
+            action = "add_chr_prefix"
+
+        if action is None:
+            logger.info("不需要修改 CHROM 前缀，继续后续过滤。")
+        else:
+            # 构造 rename-chrs 映射文件
+            mapping_lines = []
+            if action == "remove_chr_prefix":
+                for i in range(1, 23):
+                    mapping_lines.append(f"chr{i}\t{i}\n")
+                mapping_lines.extend([
+                    "chrX\tX\n",
+                    "chrY\tY\n",
+                    "chrM\tM\n",
+                ])
+            elif action == "add_chr_prefix":
+                for i in range(1, 23):
+                    mapping_lines.append(f"{i}\tchr{i}\n")
+                mapping_lines.extend([
+                    "X\tchrX\n",
+                    "Y\tchrY\n",
+                    "M\tchrM\n",
+                ])
+
+            # 写入临时映射文件
+            tf = tempfile.NamedTemporaryFile("w", delete=False, prefix="rename_chrs_", suffix=".tsv")
+            tf.writelines(mapping_lines)
+            tf.flush()
+            tf.close()
+            tmp_map_file = tf.name
+            logger.info(f"生成 rename-chrs 映射文件: {tmp_map_file}，共 {len(mapping_lines)} 行；action={action}")
+
+            # 生成临时标准化 VCF（bgzip 压缩）
+            in_dir = os.path.dirname(os.path.abspath(vcf_path))
+            tmp_norm_vcf = os.path.join(in_dir, f"chrfix.{os.path.basename(vcf_path)}")
+            ann_cmd = [
+                bcftools_path,
+                "annotate",
+                "--rename-chrs",
+                tmp_map_file,
+                "-Oz",
+                "-o",
+                tmp_norm_vcf,
+                "--threads",
+                str(int(threads) if threads and threads > 0 else 1),
+                vcf_path,
+            ]
+            logger.info("bcftools（标准化 CHROM）命令: " + " ".join(ann_cmd))
+
+            if dry_run:
+                # 仅在 dry-run 时把命令记下来并返回给调用者（稍后会与过滤命令一起返回）
+                chrfix_cmd_str = " ".join(shlex.quote(c) for c in ann_cmd)
+            else:
+                try:
+                    if os.path.exists(tmp_norm_vcf):
+                        os.remove(tmp_norm_vcf)
+                    subprocess.run(ann_cmd, check=True)
+                    normalized_vcf_path = tmp_norm_vcf
+                    logger.info(f"已完成 CHROM 标准化: {normalized_vcf_path}")
+                except subprocess.CalledProcessError as e:
+                    logger.error(f"CHROM 标准化失败: {e}. 命令: {' '.join(ann_cmd)}")
+                    # 清理半成品
+                    if os.path.exists(tmp_norm_vcf):
+                        try:
+                            os.remove(tmp_norm_vcf)
+                        except Exception:
+                            pass
+                    raise RuntimeError(
+                        f"bcftools annotate --rename-chrs 失败 (退出码={e.returncode}). 命令: {' '.join(shlex.quote(x) for x in ann_cmd)}"
+                    ) from e
 
     # 规范化 info_key
     if not info_key.startswith("INFO/"):
@@ -135,7 +320,7 @@ def filter_vcf_by_info(
     # 校验该 INFO key 是否存在于头部；若不存在给出相近建议
     key_name = info_key.split("/", 1)[1]
     try:
-        info_ids = _collect_info_ids_from_header(vcf_path, bcftools_path)
+        info_ids = _collect_info_ids_from_header(normalized_vcf_path, bcftools_path)
     except subprocess.CalledProcessError as e:
         raise RuntimeError(
             f"读取 VCF 头部失败，无法校验 INFO 字段。命令退出码={e.returncode}"
@@ -209,14 +394,17 @@ def filter_vcf_by_info(
         tmp_vcf,
         "--threads",
         str(int(threads) if threads and threads > 0 else 1),
-        vcf_path,
+        normalized_vcf_path,
     ]
 
     logger.info(f"bcftools 命令: {' '.join(cmd)}")
 
     # ---------- dry-run ----------
     if dry_run:
-        return " ".join(shlex.quote(c) for c in cmd)
+        filter_cmd_str = " ".join(shlex.quote(c) for c in cmd)
+        if check_chr_prefix and 'chrfix_cmd_str' in locals():
+            return chrfix_cmd_str + " && " + filter_cmd_str # type: ignore[return-value]
+        return filter_cmd_str
 
     # ---------- 执行过滤 ----------
     try:
@@ -253,5 +441,21 @@ def filter_vcf_by_info(
             raise RuntimeError(
                 f"tabix 索引失败 (退出码={e.returncode}). 命令: {' '.join(shlex.quote(x) for x in idx_cmd)}"
             ) from e
+
+    # ---------- 清理临时文件 ----------
+    try:
+        if tmp_map_file and os.path.exists(tmp_map_file):
+            os.remove(tmp_map_file)
+        # 若生成了标准化的临时 VCF，使用后删除
+        if tmp_norm_vcf and os.path.exists(tmp_norm_vcf):
+            try:
+                os.remove(tmp_norm_vcf)
+                if os.path.exists(tmp_norm_vcf + ".tbi"):
+                    os.remove(tmp_norm_vcf + ".tbi")
+            except Exception:
+                pass
+    except Exception:
+        # 清理失败不应影响主流程
+        logger.warning("清理临时文件时发生非致命错误", exc_info=True)
 
     return out_vcf
