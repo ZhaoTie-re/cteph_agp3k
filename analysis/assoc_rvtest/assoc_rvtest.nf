@@ -3,7 +3,7 @@ params.snpeffDir = '/LARGE1/gr10478/platform/JHRPv4/workspace/pipeline/output/sn
 params.scriptDir = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/analysis/assoc_rvtest/scripts'
 params.outDir = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/analysis/assoc_rvtest/results'
 
-params.numvarThr = 2 // 每个基因至少包含的变异数阈值
+params.numvarThr = 3 // 每个基因至少包含的变异数阈值
 
 process RVtestPrepare {
     executor 'slurm'
