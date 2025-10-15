@@ -47,7 +47,7 @@ def update_json_manifest(
     str
         新 JSON 文件路径。
     """
-    import json, os, re, math, datetime, concurrent.futures, subprocess, shlex, logging
+    import json, os, re, math, datetime, concurrent.futures, subprocess, shlex, logging, gzip
 
     def _read_assoc_counts(path: str, thr: int, sig_out_path: str = None) -> dict: # type: ignore
         """读取 .assoc 文件并返回统计字典。
@@ -328,6 +328,56 @@ def update_json_manifest(
     else:
         logger.warning("未找到可用的 VCF 文件路径，跳过等位计数表导出。")
 
+    # ---------- 统计 allele_counts.tsv.gz 的行数（排除表头）及按 MAC 阈值的行数 ----------
+    allele_counts_src = allele_counts_tsv
+    if not allele_counts_src:
+        allele_counts_src = ((meta.get("exported_files") or {}).get("allele_counts_tsv_gz"))
+    allele_counts_summary = None
+    if allele_counts_src and os.path.exists(allele_counts_src):
+        total_excl_header = 0
+        ge5 = 0
+        ge10 = 0
+        mac_idx = None
+        try:
+            with gzip.open(allele_counts_src, "rt", encoding="utf-8", errors="ignore") as fh:
+                header = fh.readline()
+                if header:
+                    cols = header.rstrip("\n").split("\t")
+                    # 期望表头: CHROM POS ID REF ALT AN AC MAC
+                    lower = [c.lower() for c in cols]
+                    if "mac" in lower:
+                        mac_idx = lower.index("mac")
+                for line in fh:
+                    if not line.strip():
+                        continue
+                    total_excl_header += 1
+                    if mac_idx is None:
+                        continue
+                    parts = line.rstrip("\n").split("\t")
+                    if mac_idx >= len(parts):
+                        continue
+                    try:
+                        mac_val = float(parts[mac_idx])
+                    except Exception:
+                        continue
+                    if mac_val >= 5:
+                        ge5 += 1
+                    if mac_val >= 10:
+                        ge10 += 1
+        except Exception as e:
+            logger.warning(f"读取 {allele_counts_src} 统计失败: {e}")
+        allele_counts_summary = {
+            "source": os.path.abspath(allele_counts_src),
+            "records_excl_header": total_excl_header,
+            "per_condition_records": {
+                "no_macmin": total_excl_header,  # 不过滤
+                "macmin_5": ge5,
+                "macmin_10": ge10,
+            },
+        }
+    else:
+        logger.warning("未找到 allele_counts.tsv.gz，无法统计观测数量。")
+
     # 把统计信息写回到新的字段中
     meta.setdefault("association_summary", {})
     meta["association_summary"]["num_var_thr"] = num_var_thr
@@ -349,6 +399,8 @@ def update_json_manifest(
         if "raw_records" in cleaned:
             cleaned.pop("raw_records", None)
         meta["association_summary"][k] = cleaned
+    if allele_counts_summary is not None:
+        meta["association_summary"]["allele_counts_summary"] = allele_counts_summary
 
     # 生成输出文件路径
     if out_path is None:
