@@ -34,16 +34,14 @@ def update_json_manifest(json_path: str, num_var_thr: int = 2, out_path: str = N
     def _read_assoc_counts(path: str, thr: int, sig_out_path: str = None) -> dict: # type: ignore
         """读取 .assoc 文件并返回统计字典。
         允许以空白分隔（\t/空格），自动识别表头，大小写不敏感地寻找 'NumVar' 列。
-        返回: {"n_genes_total": int, "n_genes_pass": int, "sig_level": float or None, "n_genes_sig": int, "sig_list_path": str or None, "raw_records": dict, "sum_numvar_total": int, "sum_numvar_pass": int}
+        返回: {"n_genes_total": int, "n_genes_pass": int, "sig_level": float or None, "n_genes_sig": int, "sig_list_path": str or None, "raw_records": dict}
         若文件不存在或为空，返回 0/0/None。
         """
         if not path or not os.path.exists(path):
-            return {"n_genes_total": 0, "n_genes_pass": 0, "sig_level": None, "n_genes_sig": 0, "sig_list_path": None, "raw_records": {}, "sum_numvar_total": 0, "sum_numvar_pass": 0}
+            return {"n_genes_total": 0, "n_genes_pass": 0, "sig_level": None, "n_genes_sig": 0, "sig_list_path": None, "raw_records": {}}
 
         n_total = 0
         n_pass = 0
-        sum_numvar_total = 0
-        sum_numvar_pass = 0
         numvar_idx = None
         gene_idx = None
         range_idx = None
@@ -96,7 +94,6 @@ def update_json_manifest(json_path: str, num_var_thr: int = 2, out_path: str = N
                     nv = int(float(cols[numvar_idx]))
                 except ValueError:
                     continue
-                sum_numvar_total += nv
                 # 记录所有观测，用于后续不显著原因分析
                 rec_gene = _unique_join(cols[gene_idx]) if gene_idx is not None and gene_idx < len(cols) else ''
                 rec_range = _unique_join(cols[range_idx]) if range_idx is not None and range_idx < len(cols) else ''
@@ -108,7 +105,6 @@ def update_json_manifest(json_path: str, num_var_thr: int = 2, out_path: str = N
                     rec_pval = None
                 raw_records[(rec_gene, rec_range)] = {"NumVar": nv, "Pvalue": rec_pval}
                 if nv >= thr:
-                    sum_numvar_pass += nv
                     n_pass += 1
                     pval = None
                     try:
@@ -139,7 +135,7 @@ def update_json_manifest(json_path: str, num_var_thr: int = 2, out_path: str = N
                         wf.write(f"{g}\t{r}\t{nv}\t{p_str}\t{sig}\n")
                 written_path = abs_path
 
-        return {"n_genes_total": n_total, "n_genes_pass": n_pass, "sig_level": sig, "n_genes_sig": n_sig, "sig_list_path": written_path, "raw_records": raw_records, "sum_numvar_total": sum_numvar_total, "sum_numvar_pass": sum_numvar_pass}
+        return {"n_genes_total": n_total, "n_genes_pass": n_pass, "sig_level": sig, "n_genes_sig": n_sig, "sig_list_path": written_path, "raw_records": raw_records}
 
     # 读取原 JSON
     with open(json_path, "r", encoding="utf-8") as f:
@@ -169,7 +165,7 @@ def update_json_manifest(json_path: str, num_var_thr: int = 2, out_path: str = N
             try:
                 summary[k] = fut.result()
             except Exception as e:
-                summary[k] = {"n_genes_total": 0, "n_genes_pass": 0, "sig_level": None, "n_genes_sig": 0, "sig_list_path": None, "sum_numvar_total": 0, "sum_numvar_pass": 0, "error": str(e)}
+                summary[k] = {"n_genes_total": 0, "n_genes_pass": 0, "sig_level": None, "n_genes_sig": 0, "sig_list_path": None, "error": str(e)}
 
     # ---------- 生成整合的 summary.significant.csv ----------
     # 优先使用实际写入路径（summary[k]['sig_list_path']），以防某些条件下无显著结果
@@ -306,3 +302,4 @@ def update_json_manifest(json_path: str, num_var_thr: int = 2, out_path: str = N
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
     return out_path
+
