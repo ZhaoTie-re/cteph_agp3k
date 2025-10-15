@@ -1,5 +1,11 @@
 
-def update_json_manifest(json_path: str, num_var_thr: int = 2, out_path: str = None) -> str: # type: ignore
+def update_json_manifest(
+    json_path: str, 
+    num_var_thr: int = 2, 
+    out_path: str = None, # type: ignore
+    bcftools_path: str = "/home/b/b37974/bcftools/bcftools", 
+    threads: int = 8
+    ) -> str: 
     """
     基于输入的 JSON 清单文件，读取 association 结果（no_macmin / macmin_5 / macmin_10）
     的 .assoc 文件，统计：
@@ -15,6 +21,18 @@ def update_json_manifest(json_path: str, num_var_thr: int = 2, out_path: str = N
       3 = 存在记录且满足 NumVar 阈值，但 Pvalue >= 对应 SigLevel
     若该条件已显著，则对应的 Reason 留空。
 
+    额外导出：依据 JSON 中 input_files.vcf_file 指向的 VCF，使用 bcftools（默认路径
+    /home/b/b37974/bcftools/bcftools，--threads 默认为 8）快速流式导出一个按位点的计数表
+    （tsv.gz），包含字段：CHROM, POS, ID, REF, ALT, AN(来自 INFO), AC(来自 INFO), MAC(由 AC 与 AN 计算)。
+    多等位的位点按 ALT 展开为多行（每个 ALT 一行），避免高内存占用。导出路径会写回 JSON。
+
+    新增参数
+    ------
+    bcftools_path : str, default "/home/b/b37974/bcftools/bcftools"
+        bcftools 的可执行文件路径。
+    threads : int, default 8
+        传给 bcftools 的 --threads 数量。
+
     参数
     ------
     json_path : str
@@ -29,7 +47,7 @@ def update_json_manifest(json_path: str, num_var_thr: int = 2, out_path: str = N
     str
         新 JSON 文件路径。
     """
-    import json, os, re, math, datetime, concurrent.futures
+    import json, os, re, math, datetime, concurrent.futures, subprocess, shlex, logging
 
     def _read_assoc_counts(path: str, thr: int, sig_out_path: str = None) -> dict: # type: ignore
         """读取 .assoc 文件并返回统计字典。
@@ -272,6 +290,44 @@ def update_json_manifest(json_path: str, num_var_thr: int = 2, out_path: str = N
                 r3 = _reason_for("macmin_10", (gene, rng))
                 writer.writerow([gene, rng, numvar_json, pvalue_json, siglvl_json, r1, r2, r3])
 
+    # ---------- 依据 VCF 导出等位计数表 (tsv.gz) ----------
+    logger = logging.getLogger("summary_tools")
+    if not logger.handlers:
+        _h = logging.StreamHandler()
+        _fmt = logging.Formatter("[%(asctime)s] %(levelname)s - %(message)s")
+        _h.setFormatter(_fmt)
+        logger.addHandler(_h)
+        logger.setLevel(logging.INFO)
+
+    vcf_file = (meta.get("input_files") or {}).get("vcf_file")
+    allele_counts_tsv = None
+    allele_counts_tbi = None
+    if vcf_file and os.path.exists(vcf_file):
+        allele_counts_tsv = os.path.abspath(os.path.join(cwd, f"{stem}.allele_counts.tsv.gz"))
+        allele_counts_tbi = allele_counts_tsv + ".tbi"
+        logger.info("开始导出等位计数表（流式）：CHROM POS ID REF ALT AN AC MAC ..")
+        # 使用 bcftools query 流式输出，然后用 awk 展开多等位并计算 MAC，再 bgzip 压缩
+        # 字段说明：
+        # $1=CHROM $2=POS $3=ID $4=REF $5=ALT(逗号分隔) $6=AN $7=AC(逗号分隔)
+        awk_code = r'BEGIN{OFS="\t"; print "CHROM","POS","ID","REF","ALT","AN","AC","MAC"} {split($5, alts, ","); split($7, acs, ","); an=$6; n=(length(alts)>length(acs)?length(alts):length(acs)); for(i=1;i<=n;i++){ alt=alts[i]; ac=acs[i]; if(alt==""||ac==""||ac==".") continue; mac=(an-ac); if(ac<mac) mac=ac; print $1,$2,$3,$4,alt,an,ac,mac; }}'
+        fmt = "%CHROM\t%POS\t%ID\t%REF\t%ALT\t%INFO/AN\t%INFO/AC\n"
+        query_cmd = f"{shlex.quote(bcftools_path)} query -u -f {shlex.quote(fmt)} {shlex.quote(vcf_file)}"
+        shell_cmd = (
+            f"set -euo pipefail; \n" \
+            f"{query_cmd} | awk '{awk_code}' | bgzip -@ {int(threads)} -c > {shlex.quote(allele_counts_tsv)} && "
+            f"tabix -f -s 1 -b 2 -e 2 -S 1 {shlex.quote(allele_counts_tsv)}"
+        )
+        try:
+            logger.info("执行命令：" + shell_cmd)
+            subprocess.run(["/bin/bash", "-lc", shell_cmd], check=True)
+            logger.info("等位计数表导出完成：" + allele_counts_tsv)
+        except subprocess.CalledProcessError as e:
+            logger.error(f"等位计数表导出失败，退出码={e.returncode}")
+            allele_counts_tsv = None
+            allele_counts_tbi = None
+    else:
+        logger.warning("未找到可用的 VCF 文件路径，跳过等位计数表导出。")
+
     # 把统计信息写回到新的字段中
     meta.setdefault("association_summary", {})
     meta["association_summary"]["num_var_thr"] = num_var_thr
@@ -282,6 +338,11 @@ def update_json_manifest(json_path: str, num_var_thr: int = 2, out_path: str = N
     }
     if summary_sig_csv:
         meta["association_summary"]["summary_significant_csv"] = summary_sig_csv
+    if allele_counts_tsv:
+        meta.setdefault("exported_files", {})
+        meta["exported_files"]["allele_counts_tsv_gz"] = allele_counts_tsv
+        if allele_counts_tbi is not None and os.path.exists(allele_counts_tbi):
+            meta["exported_files"]["allele_counts_tsv_gz_tbi"] = allele_counts_tbi
     for k, stat in summary.items():
         cleaned = dict(stat) if isinstance(stat, dict) else {}
         # 移除内部使用的原始记录，避免 tuple 作为键导致 JSON 序列化失败
@@ -302,4 +363,3 @@ def update_json_manifest(json_path: str, num_var_thr: int = 2, out_path: str = N
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
     return out_path
-
