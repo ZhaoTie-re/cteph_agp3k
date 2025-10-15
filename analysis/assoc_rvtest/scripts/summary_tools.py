@@ -1,4 +1,65 @@
 
+"""
+summary_tools.py — 关联结果汇总与导出工具
+================================================
+
+概述
+----
+本脚本用于在 RVTESTS/SAIGE 等基因集合关联分析流程结束后，对多个条件（如 no_macmin、macmin_5、macmin_10）的结果进行**并行读取与统计**，并将关键产出物与统计信息**结构化写回 JSON**。同时，它还能基于给定 VCF 路径以 **bcftools→awk→bgzip** 的**流式**方式快速导出等位计数表，避免高内存占用。
+
+主要功能
+--------
+1. 读取 `association_results` 中的 `.assoc` 文件，统计：
+   - `n_genes_total`：不含表头的基因条目数；
+   - `n_genes_pass`：满足 `NumVar ≥ num_var_thr` 的条目数；
+   - `sig_level`：`0.05 / n_genes_pass`；
+   - 生成各条件的 `*.significant.tsv`（含 `Gene,RANGE,NumVar,Pvalue,SigLevel`，按 `Pvalue` 升序；`Gene/RANGE` 会按逗号切分去重后再合并）。
+2. 生成整合表 `summary.significant.csv`：
+   - 列：`Gene,RANGE,NumVar,Pvalue,SigLevel,Reason_no_macmin,Reason_macmin_5,Reason_macmin_10`；
+   - 其中 `NumVar/Pvalue/SigLevel` 为按条件组织的 JSON；
+   - `Reason_*` 原因编码：`1`=原始结果缺失（如 MAC 过滤导致）、`2`=存在记录但 `NumVar` 未达阈值、`3`=存在记录且达阈值但不显著。
+3. 基于 `input_files.vcf_file` 导出 `allele_counts.tsv.gz`：
+   - 字段：`CHROM,POS,ID,REF,ALT,AN,AC,MAC`；
+   - 多等位位点按 `ALT` 展开为多行；
+   - 使用 `tabix -S 1` 建立索引，自动记录到 JSON 的 `exported_files`。
+4. 统计 `allele_counts.tsv.gz` 的观测量：
+   - `records_excl_header`：总行数（排除表头）；
+   - `per_condition_records`：`no_macmin`（等于总行数）、`macmin_5`（`MAC≥5` 行数）、`macmin_10`（`MAC≥10` 行数）。
+
+输出 JSON 的关键字段
+--------------------
+- `association_summary.num_var_thr`：本次阈值；
+- `association_summary.non_sig_reason_legend`：原因编码图例；
+- `association_summary.{no_macmin|macmin_5|macmin_10}`：各条件统计（见上）；
+- `association_summary.summary_significant_csv`：整合 CSV 绝对路径；
+- `association_summary.allele_counts_summary`：导出表的行数统计与条件行数；
+- `exported_files.allele_counts_tsv_gz` 及其索引路径。
+
+依赖与环境
+----------
+- 需要可执行：`bcftools`、`awk`、`bgzip`、`tabix`；
+- 本脚本默认 `bcftools_path="/home/b/b37974/bcftools/bcftools"`；
+- `bgzip -@ <threads>` 负责压缩时的多线程；`bcftools query` 不依赖 `--threads`；
+- 日志 Logger 名称为 `summary_tools`，输出中文提示便于定位问题。
+
+使用示例
+--------
+>>> from summary_tools import update_json_manifest
+>>> update_json_manifest("meta.updated.json", num_var_thr=3)
+"/当前工作目录/meta.updated.json"
+
+注意事项
+--------
+- `INFO/AN` 与 `INFO/AC` 缺失的记录会在 `awk` 阶段被跳过；
+- 头行以 `tabix -S 1` 跳过建索引；
+- `Gene`/`RANGE` 会被按逗号分隔去重后再写出；
+- 仅在存在显著基因时才会生成对应的 `*.significant.tsv` 与整合 CSV。
+
+作者
+----
+- ZHAO TIE
+"""
+
 def update_json_manifest(
     json_path: str, 
     num_var_thr: int = 2, 
@@ -7,45 +68,24 @@ def update_json_manifest(
     threads: int = 8
     ) -> str: 
     """
-    基于输入的 JSON 清单文件，读取 association 结果（no_macmin / macmin_5 / macmin_10）
-    的 .assoc 文件，统计：
-      1) 各文件包含的基因数（不含表头行）
-      2) 各文件中满足 NumVar >= num_var_thr 的基因数（不含表头行）
-      3) 计算显著性阈值 Sig_level = 0.05 / 通过数量
-    并把统计结果回写到新的 JSON 文件中。
+    基于清单 JSON 统计关联结果并导出汇总文件（简要说明）。
 
-    补充：生成 `<stem>.summary.significant.csv`，在整合显著基因的基础上，新增 3 列
-    `Reason_no_macmin`、`Reason_macmin_5`、`Reason_macmin_10` 标记各条件下未显著的原因：
-      1 = 原始 association 结果中不存在该基因（如 MAC 过滤导致）
-      2 = 存在记录，但 NumVar < num_var_thr 因而被过滤
-      3 = 存在记录且满足 NumVar 阈值，但 Pvalue >= 对应 SigLevel
-    若该条件已显著，则对应的 Reason 留空。
+    功能：
+    - 并行读取 `no_macmin`、`macmin_5`、`macmin_10` 的 `.assoc` 文件，统计 `n_genes_total`、`n_genes_pass`、`sig_level`；
+    - 生成各条件的 `*.significant.tsv`（`Gene,RANGE,NumVar,Pvalue,SigLevel`，`Pvalue` 升序；`Gene/RANGE` 去重合并）；
+    - 合并生成 `summary.significant.csv`，并给出每个条件未显著的原因编码（1/2/3，详见模块文档）；
+    - 基于 `input_files.vcf_file` 流式导出 `allele_counts.tsv.gz` 并索引；统计总行数及 `MAC≥5/10` 行数；
+    - 将以上结果结构化写回新的 JSON。
 
-    额外导出：依据 JSON 中 input_files.vcf_file 指向的 VCF，使用 bcftools（默认路径
-    /home/b/b37974/bcftools/bcftools，--threads 默认为 8）快速流式导出一个按位点的计数表
-    （tsv.gz），包含字段：CHROM, POS, ID, REF, ALT, AN(来自 INFO), AC(来自 INFO), MAC(由 AC 与 AN 计算)。
-    多等位的位点按 ALT 展开为多行（每个 ALT 一行），避免高内存占用。导出路径会写回 JSON。
+    参数：
+    - json_path (str)：输入 JSON 路径；
+    - num_var_thr (int, 默认 2)：`NumVar` 判定阈值；
+    - out_path (str|None)：输出 JSON 路径（默认写到当前工作目录）；
+    - bcftools_path (str, 默认 "/home/b/b37974/bcftools/bcftools")：bcftools 可执行路径；
+    - threads (int, 默认 8)：压缩与相关步骤的线程数。
 
-    新增参数
-    ------
-    bcftools_path : str, default "/home/b/b37974/bcftools/bcftools"
-        bcftools 的可执行文件路径。
-    threads : int, default 8
-        传给 bcftools 的 --threads 数量。
-
-    参数
-    ------
-    json_path : str
-        现有清单 JSON 文件路径，包含 association_results 字段。
-    num_var_thr : int, default=2
-        NumVar 的阈值（大于等于该阈值计数）。
-    out_path : Optional[str]
-        输出 JSON 文件路径；若为 None，则在同目录创建 `<原名>.updated.json`。
-
-    返回
-    ------
-    str
-        新 JSON 文件路径。
+    返回：
+    - (str) 新 JSON 文件的绝对路径。
     """
     import json, os, re, math, datetime, concurrent.futures, subprocess, shlex, logging, gzip
 

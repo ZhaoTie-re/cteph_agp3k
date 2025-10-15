@@ -188,3 +188,31 @@ process JsonManifest {
     """
 }
 
+process SummaryStats {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '24h'
+    tag "summary stats"
+
+    publishDir "${params.outDir}/06.summary_stats", mode: 'symlink'
+
+    input:
+    file(json_manifest) from json_manifest_ch
+    val numvar_thr from params.numvarThr
+
+    output:
+    file('*.tsv')
+    file('*.csv')
+    tuple file("*.allele_counts.tsv.gz"), file("*.allele_counts.tsv.gz.tbi") into allele_counts_tsv_ch
+    file('*.updated.json') into updated_json_manifest_ch
+
+    script:
+    """
+    source activate cteph_geno_pro
+    python ${params.scriptDir}/summary_main.py \
+        --json-path ${json_manifest} \
+        --num-var-thr ${numvar_thr} \
+        --threads 8 \
+        --verbose
+    """
+}
