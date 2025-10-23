@@ -843,5 +843,306 @@ def plot_ld_heatmaps_from_index(
     return out_pdf_path
 
 
-# new funtion 
+def integrate_susie_results_with_sumstat(
+    susie_summary_json_path: str,
+    ld_matrices_summary_json_path: str,
+    output_dir: Optional[str] = None,
+    output_prefix: str = "integrated_susie_results",
+    logger: Optional[logging.Logger] = None,
+) -> dict:
+    """
+    整合 SuSiE 结果与汇总统计量数据，并提取可信集信息。
+
+    参数：
+        susie_summary_json_path (str): susie_summary.json 文件路径
+        ld_matrices_summary_json_path (str): cteph_agp3k.lowfreq_common.ld_matrices_by_lead.summary.json 文件路径
+        output_dir (Optional[str]): 输出目录，默认为 ld_matrices_summary_json 同目录
+        output_prefix (str): 输出文件前缀，默认为 "integrated_susie_results"
+        logger (Optional[logging.Logger]): 日志记录器
+
+    返回：
+        dict: 包含输出文件路径和处理状态的字典
+    """
+    # ---------- 辅助函数 ----------
+    def _log(msg: str):
+        if logger:
+            logger.info(msg)
+        else:
+            print(f"[INFO] {msg}")
+
+    def _sanitize_filename(name: str) -> str:
+        """将文件名中的特殊字符替换为下划线"""
+        import re
+        return re.sub(r'[^\w\-_\.]', '_', name)
+
+    # ---------- 读取输入文件 ----------
+    _log("开始读取输入文件...")
+    
+    # 读取 susie_summary.json
+    with open(susie_summary_json_path, "r", encoding="utf-8") as f:
+        susie_summary = json.load(f)
+    
+    # 读取 ld_matrices_summary.json
+    with open(ld_matrices_summary_json_path, "r", encoding="utf-8") as f:
+        ld_matrices_summary = json.load(f)
+    
+    # 确定输出目录
+    if output_dir is None:
+        output_dir = os.path.dirname(os.path.abspath(ld_matrices_summary_json_path))
+    os.makedirs(output_dir, exist_ok=True)
+    
+    _log(f"输出目录: {output_dir}")
+    
+    # ---------- 处理每个 lead variant ----------
+    per_lead_outputs = ld_matrices_summary.get("per_lead_outputs", {})
+    integrated_results = {
+        "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "inputs": {
+            "susie_summary_json": os.path.abspath(susie_summary_json_path),
+            "ld_matrices_summary_json": os.path.abspath(ld_matrices_summary_json_path),
+            "output_dir": os.path.abspath(output_dir),
+            "output_prefix": output_prefix,
+        },
+        "per_lead_integrated": {},
+        "credible_sets_summary": {},
+    }
+    
+    all_credible_sets = []
+    
+    for lead_variant, lead_data in per_lead_outputs.items():
+        _log(f"处理 lead variant: {lead_variant}")
+        
+        # 检查是否有对应的 SuSiE 结果
+        if lead_variant not in susie_summary:
+            _log(f"警告: 在 susie_summary 中未找到 {lead_variant}，跳过")
+            continue
+        
+        susie_info = susie_summary[lead_variant]
+        if not susie_info.get("json_exists", False):
+            _log(f"警告: {lead_variant} 的 SuSiE JSON 文件不存在，跳过")
+            continue
+        
+        # 读取 sum_stat_tsv
+        sum_stat_tsv_path = lead_data.get("sum_stat_tsv")
+        if not sum_stat_tsv_path or not os.path.exists(sum_stat_tsv_path):
+            _log(f"警告: {lead_variant} 的 sum_stat_tsv 文件不存在: {sum_stat_tsv_path}")
+            continue
+        
+        try:
+            sum_stat_df = pd.read_csv(sum_stat_tsv_path, sep="\t", dtype={"SNPID": str})
+        except Exception as e:
+            _log(f"错误: 读取 {sum_stat_tsv_path} 失败: {e}")
+            continue
+        
+        # 读取 SuSiE JSON 结果
+        susie_json_path = susie_info.get("json_file")
+        if not susie_json_path or not os.path.exists(susie_json_path):
+            _log(f"警告: {lead_variant} 的 SuSiE JSON 文件不存在: {susie_json_path}")
+            continue
+        
+        try:
+            with open(susie_json_path, "r", encoding="utf-8") as f:
+                susie_results = json.load(f)
+        except Exception as e:
+            _log(f"错误: 读取 {susie_json_path} 失败: {e}")
+            continue
+        
+        # ---------- 提取 SuSiE 结果中的 PIP 和 LD 信息 ----------
+        # SuSiE 结果的 pip 是一个列表，每个元素包含 variant_id, pip, ld_r_with_lead, ld_r2_with_lead
+        pip_list = susie_results.get("pip", [])
+        
+        pip_data = {}
+        ld_r_data = {}
+        ld_r2_data = {}
+        
+        if isinstance(pip_list, list):
+            for item in pip_list:
+                if isinstance(item, dict) and 'variant_id' in item:
+                    variant_id = item['variant_id']
+                    pip_data[variant_id] = item.get('pip', 0.0)
+                    ld_r_data[variant_id] = item.get('ld_r_with_lead', 0.0)
+                    ld_r2_data[variant_id] = item.get('ld_r2_with_lead', 0.0)
+        else:
+            _log(f"警告: {lead_variant} 的 pip 数据不是列表格式: {type(pip_list)}")
+        
+        _log(f"提取到 {len(pip_data)} 个变体的 PIP 信息")
+        
+        # 合并 PIP 和 LD 信息到 sum_stat_df
+        sum_stat_df["PIP"] = sum_stat_df["SNPID"].map(pip_data).fillna(0.0)
+        sum_stat_df["LD_R_WITH_LEAD"] = sum_stat_df["SNPID"].map(ld_r_data).fillna(0.0)
+        sum_stat_df["LD_R2_WITH_LEAD"] = sum_stat_df["SNPID"].map(ld_r2_data).fillna(0.0)
+        
+        # 保存增强后的 sum_stat 文件
+        sanitized_lead = _sanitize_filename(lead_variant)
+        enhanced_sumstat_path = os.path.join(
+            output_dir, f"{output_prefix}.{sanitized_lead}.enhanced_sumstat.tsv"
+        )
+        sum_stat_df.to_csv(enhanced_sumstat_path, sep="\t", index=False)
+        
+        # ---------- 提取可信集信息 ----------
+        # SuSiE 结果的 credible_sets 是一个列表，每个元素包含一个可信集的信息
+        credible_sets_list = susie_results.get("credible_sets", [])
+        lead_credible_sets = []
+        
+        if isinstance(credible_sets_list, list):
+            for cs_data in credible_sets_list:
+                if not isinstance(cs_data, dict):
+                    continue
+                
+                cs_index = cs_data.get("cs_index", "unknown")
+                cs_name = f"CS{cs_index}"
+                cs_coverage = cs_data.get("coverage", None)
+                cs_size = cs_data.get("size", None)
+                cs_variants = cs_data.get("variants", [])
+                
+                # 提取 purity 信息中的相关系数统计
+                purity_info = cs_data.get("purity", {})
+                cs_min_abs_corr = None
+                cs_mean_abs_corr = None
+                cs_median_abs_corr = None
+                
+                if isinstance(purity_info, dict):
+                    # 提取 min_abs_corr
+                    min_abs_corr_list = purity_info.get("min_abs_corr", [])
+                    if isinstance(min_abs_corr_list, list) and len(min_abs_corr_list) > 0:
+                        first_item = min_abs_corr_list[0]
+                        if isinstance(first_item, dict):
+                            cs_min_abs_corr = first_item.get("min.abs.corr", None)
+                    
+                    # 提取 mean_abs_corr
+                    mean_abs_corr_list = purity_info.get("mean_abs_corr", [])
+                    if isinstance(mean_abs_corr_list, list) and len(mean_abs_corr_list) > 0:
+                        first_item = mean_abs_corr_list[0]
+                        if isinstance(first_item, dict):
+                            cs_mean_abs_corr = first_item.get("mean.abs.corr", None)
+                    
+                    # 提取 median_abs_corr
+                    median_abs_corr_list = purity_info.get("median_abs_corr", [])
+                    if isinstance(median_abs_corr_list, list) and len(median_abs_corr_list) > 0:
+                        first_item = median_abs_corr_list[0]
+                        if isinstance(first_item, dict):
+                            cs_median_abs_corr = first_item.get("median.abs.corr", None)
+                
+                if isinstance(cs_variants, list):
+                    for i, variant_item in enumerate(cs_variants):
+                        # 从可信集变体中提取变体ID
+                        if isinstance(variant_item, dict):
+                            variant_id = variant_item.get('variant_id', str(variant_item))
+                        else:
+                            variant_id = str(variant_item)
+                        
+                        # 从 pip_data 中获取该变体的 PIP 值
+                        pip_val = pip_data.get(variant_id, 0.0)
+                        
+                        cs_record = {
+                            "locus_lead_variant": lead_variant,  # 更清晰的命名：该位点的主导变体
+                            "credible_set": cs_name,
+                            "variant_id": variant_id,
+                            "is_lead_variant": variant_id == lead_variant,  # 标识是否为主导变体
+                            "pip": float(pip_val),
+                            "rank_in_cs": i + 1,
+                            "cs_coverage": float(cs_coverage) if cs_coverage is not None else None,
+                            "cs_min_abs_corr": float(cs_min_abs_corr) if cs_min_abs_corr is not None else None,
+                            "cs_mean_abs_corr": float(cs_mean_abs_corr) if cs_mean_abs_corr is not None else None,
+                            "cs_median_abs_corr": float(cs_median_abs_corr) if cs_median_abs_corr is not None else None,
+                            "cs_size": int(cs_size) if cs_size is not None else len(cs_variants),
+                        }
+                        
+                        # 从 sum_stat_df 中补充变体的统计信息
+                        variant_stats = sum_stat_df[sum_stat_df["SNPID"] == variant_id]
+                        if not variant_stats.empty:
+                            variant_row = variant_stats.iloc[0]
+                            cs_record.update({
+                                "chr": int(val) if pd.notna(val := variant_row.get("CHR")) else None,  # type: ignore
+                                "pos": int(val) if pd.notna(val := variant_row.get("POS")) else None,  # type: ignore
+                                "ea": str(val) if pd.notna(val := variant_row.get("EA")) else None,  # type: ignore
+                                "nea": str(val) if pd.notna(val := variant_row.get("NEA")) else None,  # type: ignore
+                                "eaf": float(val) if pd.notna(val := variant_row.get("EAF")) else None,  # type: ignore
+                                "beta": float(val) if pd.notna(val := variant_row.get("BETA")) else None,  # type: ignore
+                                "se": float(val) if pd.notna(val := variant_row.get("SE")) else None,  # type: ignore
+                                "z": float(val) if pd.notna(val := variant_row.get("Z")) else None,  # type: ignore
+                                "p": float(val) if pd.notna(val := variant_row.get("P")) else None,  # type: ignore
+                                "or": float(val) if pd.notna(val := variant_row.get("OR")) else None,  # type: ignore
+                                "or_95l": float(val) if pd.notna(val := variant_row.get("OR_95L")) else None,  # type: ignore
+                                "or_95u": float(val) if pd.notna(val := variant_row.get("OR_95U")) else None,  # type: ignore
+                                "ld_r_with_lead": float(val) if pd.notna(val := variant_row.get("LD_R_WITH_LEAD")) else None,  # type: ignore
+                                "ld_r2_with_lead": float(val) if pd.notna(val := variant_row.get("LD_R2_WITH_LEAD")) else None,  # type: ignore
+                            })
+                        
+                        lead_credible_sets.append(cs_record)
+                        all_credible_sets.append(cs_record)
+        else:
+            _log(f"警告: {lead_variant} 的 credible_sets 不是列表格式: {type(credible_sets_list)}")
+        
+        _log(f"提取到 {len(lead_credible_sets)} 个可信集变体")
+        
+        # 为每个 lead variant 单独保存可信集文件
+        lead_credible_sets_path = None
+        if lead_credible_sets:
+            lead_credible_sets_df = pd.DataFrame(lead_credible_sets)
+            lead_credible_sets_path = os.path.join(
+                output_dir, f"{output_prefix}.{sanitized_lead}.credible_sets.tsv"
+            )
+            lead_credible_sets_df.to_csv(lead_credible_sets_path, sep="\t", index=False)
+            _log(f"保存 {lead_variant} 可信集文件: {lead_credible_sets_path} ({len(lead_credible_sets_df)} 行)")
+
+        # 记录结果
+        integrated_results["per_lead_integrated"][lead_variant] = {
+            "enhanced_sumstat_path": enhanced_sumstat_path,
+            "credible_sets_path": lead_credible_sets_path,
+            "original_sumstat_path": sum_stat_tsv_path,
+            "susie_json_path": susie_json_path,
+            "n_variants_total": len(sum_stat_df),
+            "n_variants_with_pip": len(sum_stat_df[sum_stat_df["PIP"] > 0]),
+            "n_credible_sets": len(set(cs["credible_set"] for cs in lead_credible_sets)),
+            "n_credible_variants": len(lead_credible_sets),
+        }
+        
+        integrated_results["credible_sets_summary"][lead_variant] = lead_credible_sets
+        
+        _log(f"完成 {lead_variant}: {len(sum_stat_df)} 个变体，{len(lead_credible_sets)} 个可信集变体")
+    
+    # ---------- 保存可信集汇总表（合并所有 lead 的可信集） ----------
+    merged_credible_sets_tsv_path = None
+    if all_credible_sets:
+        credible_sets_df = pd.DataFrame(all_credible_sets)
+        merged_credible_sets_tsv_path = os.path.join(output_dir, f"{output_prefix}.merged_credible_sets.tsv")
+        credible_sets_df.to_csv(merged_credible_sets_tsv_path, sep="\t", index=False)
+        _log(f"保存合并可信集汇总表: {merged_credible_sets_tsv_path} ({len(credible_sets_df)} 行)")
+    else:
+        _log("未找到任何可信集数据")
+    
+    # ---------- 保存整合结果的 JSON ----------
+    integrated_json_path = os.path.join(output_dir, f"{output_prefix}.integrated_results.json")
+    
+    # 收集所有单独的可信集文件路径
+    individual_credible_sets_files = {}
+    for lead_variant in integrated_results["per_lead_integrated"]:
+        cs_path = integrated_results["per_lead_integrated"][lead_variant].get("credible_sets_path")
+        if cs_path:
+            individual_credible_sets_files[lead_variant] = cs_path
+    
+    integrated_results["outputs"] = {
+        "merged_credible_sets_tsv": merged_credible_sets_tsv_path,  # 合并所有 lead 的可信集文件
+        "individual_credible_sets": individual_credible_sets_files,  # 每个 lead 的单独可信集文件
+        "integrated_json": integrated_json_path,
+    }
+    
+    with open(integrated_json_path, "w", encoding="utf-8") as f:
+        json.dump(integrated_results, f, ensure_ascii=False, indent=2)
+    
+    _log(f"保存整合结果 JSON: {integrated_json_path}")
+    _log(f"处理完成: {len(integrated_results['per_lead_integrated'])} 个 lead variants")
+    
+    return {
+        "success": True,
+        "integrated_json_path": integrated_json_path,
+        "merged_credible_sets_tsv_path": merged_credible_sets_tsv_path,  # 合并所有 lead 的可信集文件
+        "individual_credible_sets_files": individual_credible_sets_files,  # 每个 lead 的单独文件字典
+        "n_leads_processed": len(integrated_results["per_lead_integrated"]),
+        "n_credible_variants": len(all_credible_sets),
+    }
+
+
+
 
