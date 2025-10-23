@@ -1144,5 +1144,349 @@ def integrate_susie_results_with_sumstat(
     }
 
 
+def plot_manhattan_plots_from_integrated_results(
+    integrated_json_path: str,
+    out_pdf_path: Optional[str] = None,
+    output_prefix: Optional[str] = None,
+    highlight_credible_sets: bool = True,
+    dpi: int = 150,
+    figsize: tuple = (12, 8),
+    logger: Optional[logging.Logger] = None,
+) -> str:
+    """
+    基于 integrate_susie_results_with_sumstat 产生的整合结果 JSON，
+    为每个 lead variant 生成曼哈顿图：上方显示 -log10(P)，下方显示 PIP。
+    每个 lead variant 占用 PDF 的一页。
+
+    参数：
+        integrated_json_path (str): integrated_results.json 文件路径
+        out_pdf_path (Optional[str]): 输出 PDF 路径；若为空则自动生成
+        output_prefix (Optional[str]): 输出文件前缀
+        highlight_credible_sets (bool): 是否高亮显示可信集变体
+        dpi (int): 图像分辨率
+        figsize (tuple): 图像尺寸 (width, height)
+        logger (Optional[logging.Logger]): 日志记录器
+
+    返回：
+        str: 输出 PDF 的绝对路径
+    """
+    # ---------- 辅助函数 ----------
+    def _log(msg: str):
+        if logger:
+            logger.info(msg)
+        else:
+            print(f"[plot_manhattan_plots] {msg}")
+
+    def _parse_chr_pos(variant_id: str) -> tuple:
+        """解析变体ID获取染色体和位置信息"""
+        try:
+            parts = str(variant_id).split(":")
+            if len(parts) >= 2:
+                chr_str = parts[0].replace("CHR", "").replace("chr", "")
+                pos = int(parts[1])
+                # 处理染色体编号
+                if chr_str.upper() == "X":
+                    chr_num = 23
+                elif chr_str.upper() == "Y":
+                    chr_num = 24
+                elif chr_str.upper() in ("M", "MT"):
+                    chr_num = 25
+                else:
+                    chr_num = int(chr_str)
+                return chr_num, pos
+        except:
+            pass
+        return 0, 0
+
+    # ---------- 读取整合结果 ----------
+    _log(f"读取整合结果: {integrated_json_path}")
+    with open(integrated_json_path, "r", encoding="utf-8") as f:
+        integrated_results = json.load(f)
+
+    per_lead_integrated = integrated_results.get("per_lead_integrated", {})
+    if not per_lead_integrated:
+        raise ValueError("整合结果中没有找到 per_lead_integrated 数据")
+
+    # 确定输出路径
+    if output_prefix is not None and (out_pdf_path is None or str(out_pdf_path).strip() == ""):
+        base_dir = os.path.dirname(os.path.abspath(integrated_json_path))
+        out_pdf_path = os.path.join(base_dir, f"{output_prefix}.manhattan_plots.pdf")
+    elif out_pdf_path is None or str(out_pdf_path).strip() == "":
+        base_dir = os.path.dirname(os.path.abspath(integrated_json_path))
+        base_name = os.path.splitext(os.path.basename(integrated_json_path))[0]
+        out_pdf_path = os.path.join(base_dir, f"{base_name}.manhattan_plots.pdf")
+    
+    out_pdf_path = os.path.abspath(out_pdf_path)
+    _log(f"输出PDF路径: {out_pdf_path}")
+
+    # ---------- 为每个 lead variant 生成图表 ----------
+    from matplotlib.backends.backend_pdf import PdfPages
+    import matplotlib.pyplot as plt
+    
+    # 设置学术发表标准的图表样式
+    plt.rcParams.update({
+        'font.family': 'DejaVu Sans',  # 使用专业字体
+        'font.size': 10,               # 基础字体大小
+        'axes.titlesize': 12,          # 标题字体大小
+        'axes.labelsize': 11,          # 轴标签字体大小
+        'xtick.labelsize': 9,          # X轴刻度字体大小
+        'ytick.labelsize': 9,          # Y轴刻度字体大小
+        'legend.fontsize': 8,          # 图例字体大小
+        'figure.titlesize': 14,        # 图像标题字体大小
+        'axes.linewidth': 1.2,         # 轴线宽度
+        'grid.linewidth': 0.8,         # 网格线宽度
+        'lines.linewidth': 1.5,        # 线条宽度
+        'patch.linewidth': 1.0,        # 补丁线宽度
+        'axes.edgecolor': 'black',     # 轴边框颜色
+        'axes.facecolor': 'white',     # 图表背景色
+        'figure.facecolor': 'white',   # 图像背景色
+        'grid.alpha': 0.3,             # 网格透明度
+        'axes.axisbelow': True,        # 网格在数据下方
+    })
+    
+    with PdfPages(out_pdf_path) as pdf:
+        for lead_variant, lead_data in per_lead_integrated.items():
+            _log(f"处理 lead variant: {lead_variant}")
+            
+            # 读取增强的汇总统计数据
+            enhanced_sumstat_path = lead_data.get("enhanced_sumstat_path")
+            if not enhanced_sumstat_path or not os.path.exists(enhanced_sumstat_path):
+                _log(f"警告: 跳过 {lead_variant}，增强汇总统计文件不存在")
+                continue
+            
+            try:
+                df = pd.read_csv(enhanced_sumstat_path, sep="\t", dtype={"SNPID": str})
+            except Exception as e:
+                _log(f"错误: 读取 {enhanced_sumstat_path} 失败: {e}")
+                continue
+            
+            # 检查必需的列
+            required_cols = ["SNPID", "P", "PIP"]
+            missing_cols = [col for col in required_cols if col not in df.columns]
+            if missing_cols:
+                _log(f"警告: 跳过 {lead_variant}，缺少必需列: {missing_cols}")
+                continue
+            
+            # 过滤有效数据
+            df = df.dropna(subset=["P", "PIP"])
+            df = df[df["P"] > 0]  # 确保P值为正数以计算-log10
+            
+            if df.empty:
+                _log(f"警告: 跳过 {lead_variant}，没有有效数据")
+                continue
+            
+            # 计算-log10(P)
+            df["-log10P"] = -np.log10(df["P"])
+            
+            # 解析染色体和位置信息
+            chr_pos_info = df["SNPID"].apply(_parse_chr_pos)
+            df["CHR_NUM"] = [x[0] for x in chr_pos_info]
+            df["POS_PARSED"] = [x[1] for x in chr_pos_info]
+            
+            # 按染色体和位置排序
+            df = df.sort_values(["CHR_NUM", "POS_PARSED"])
+            
+            # 获取可信集信息
+            credible_sets_df = None
+            if highlight_credible_sets:
+                credible_sets_path = lead_data.get("credible_sets_path")
+                if credible_sets_path and os.path.exists(credible_sets_path):
+                    try:
+                        credible_sets_df = pd.read_csv(credible_sets_path, sep="\t", dtype={"variant_id": str})
+                    except Exception as e:
+                        _log(f"警告: 读取可信集文件失败: {e}")
+            
+            # 创建图表 - 学术发表标准布局
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), dpi=dpi, 
+                                         gridspec_kw={'height_ratios': [1, 1], 'hspace': 0.4})
+            
+            # 设置图表背景和边框
+            for ax in [ax1, ax2]:
+                ax.spines['top'].set_visible(False)
+                ax.spines['right'].set_visible(False)
+                ax.spines['left'].set_linewidth(1.2)
+                ax.spines['bottom'].set_linewidth(1.2)
+                ax.tick_params(direction='out', length=4, width=1.2)
+            
+            # 准备基于 LD_R2_WITH_LEAD 的颜色映射
+            x_pos = range(len(df))
+            
+            # 检查是否有 LD_R2_WITH_LEAD 列，如果没有则使用默认值 0
+            if "LD_R2_WITH_LEAD" in df.columns:
+                ld_r2_values = df["LD_R2_WITH_LEAD"].fillna(0.0)
+            else:
+                _log(f"警告: {lead_variant} 缺少 LD_R2_WITH_LEAD 列，使用默认值 0")
+                ld_r2_values = pd.Series([0.0] * len(df), index=df.index)
+            
+            # 使用 viridis 颜色映射，范围 [0, 1]
+            # viridis: 深紫色(低LD) -> 蓝色 -> 绿色 -> 黄绿色(高LD)
+            # 优点：感知均匀、色盲友好、全范围高对比度、科学标准
+            cmap = plt.cm.viridis
+            vmin, vmax = 0.0, 1.0
+            
+            # 上方子图：-log10(P) 曼哈顿图 - 学术标准样式
+            scatter1 = ax1.scatter(x_pos, df["-log10P"], c=ld_r2_values, s=25, alpha=0.8, 
+                                  cmap=cmap, vmin=vmin, vmax=vmax, edgecolors='none', rasterized=True)
+            
+            # 标记lead variant - 更显眼的样式
+            lead_mask = df["SNPID"] == lead_variant
+            if lead_mask.any():
+                lead_idx = df[lead_mask].index[0]
+                lead_pos = list(df.index).index(lead_idx)
+                ax1.scatter(lead_pos, df.loc[lead_idx, "-log10P"], 
+                           c='darkred', s=120, marker='D', edgecolors='white', linewidth=2, 
+                           label='Lead Variant', zorder=10, alpha=0.9)
+            
+            # 高亮可信集变体 - 支持多个可信集，用不同颜色和形状区分
+            if credible_sets_df is not None and not credible_sets_df.empty:
+                # 获取所有可信集的名称
+                unique_cs = credible_sets_df["credible_set"].unique()
+                # 选择与 viridis 配色协调的边框颜色 - 高对比度，易于在紫-蓝-绿-黄背景上识别
+                cs_colors = ['red', 'orange', 'white', 'black', 'magenta', 'cyan']  # 高对比度边框，与viridis形成清晰区分
+                cs_markers = ['o', 's', '^', 'v', '<', '>']  # 多个可信集的形状
+                
+                for i, cs_name in enumerate(unique_cs):
+                    cs_variants_in_set = set(credible_sets_df[credible_sets_df["credible_set"] == cs_name]["variant_id"].unique())
+                    cs_mask_in_set = df["SNPID"].isin(cs_variants_in_set)
+                    
+                    if cs_mask_in_set.any():
+                        cs_indices_in_set = [list(df.index).index(idx) for idx in df[cs_mask_in_set].index]
+                        # 获取这些变体的 LD R² 值用于颜色映射
+                        cs_ld_r2_values = df.loc[df[cs_mask_in_set].index, "LD_R2_WITH_LEAD"].fillna(0.0) if "LD_R2_WITH_LEAD" in df.columns else [0.0] * len(cs_indices_in_set)
+                        
+                        color = cs_colors[i % len(cs_colors)]
+                        marker = cs_markers[i % len(cs_markers)]
+                        
+                        # 使用 LD R² 值映射颜色，但用固定颜色的边框来区分可信集 - 学术样式
+                        ax1.scatter(cs_indices_in_set, df.loc[df[cs_mask_in_set].index, "-log10P"],
+                                   c=cs_ld_r2_values, s=60, marker=marker, cmap=cmap, vmin=vmin, vmax=vmax,
+                                   edgecolors=color, linewidth=2.0, alpha=0.9, zorder=5, rasterized=True)
+            
+            # 添加显著性阈值线 - 学术标准样式
+            ax1.axhline(y=-np.log10(5e-8), color='#d62728', linestyle='--', linewidth=2, alpha=0.8, 
+                       label='Genome-wide Sig (5×10⁻⁸)', zorder=1)
+            ax1.axhline(y=-np.log10(1e-5), color='#1f77b4', linestyle='--', linewidth=2, alpha=0.8, 
+                       label='Suggestive (1×10⁻⁵)', zorder=1)
+            
+            # 为图例添加清晰的可信集标识（仅显示边框颜色和形状）
+            if credible_sets_df is not None and not credible_sets_df.empty:
+                unique_cs = credible_sets_df["credible_set"].unique()
+                cs_colors = ['red', 'orange', 'white', 'black', 'magenta', 'cyan']
+                cs_markers = ['o', 's', '^', 'v', '<', '>']
+                for i, cs_name in enumerate(unique_cs):
+                    color = cs_colors[i % len(cs_colors)]
+                    marker = cs_markers[i % len(cs_markers)]
+                    # 添加专门的图例项，使用更好的学术样式
+                    ax1.scatter([], [], c='lightgray', s=60, marker=marker, 
+                               edgecolors=color, linewidth=2.0, alpha=0.9,
+                               label=f'Credible Set {cs_name[2:]}')
+            
+            ax1.set_xlabel('Variant Index', fontweight='bold')
+            ax1.set_ylabel('-log$_{10}$(P)', fontweight='bold')
+            ax1.set_title(f'{lead_variant} — Association P-values', fontweight='bold', pad=15)
+            # 优化图例样式
+            legend1 = ax1.legend(loc='upper right', fontsize=9, frameon=True, fancybox=True, 
+                               shadow=True, framealpha=0.9, edgecolor='gray',
+                               ncol=2 if credible_sets_df is not None and len(credible_sets_df["credible_set"].unique()) > 3 else 1)
+            legend1.get_frame().set_linewidth(1.2)
+            ax1.grid(True, alpha=0.4, linestyle='-', linewidth=0.8)
+            
+            # 下方子图：PIP 曼哈顿图 - 学术标准样式
+            scatter2 = ax2.scatter(x_pos, df["PIP"], c=ld_r2_values, s=25, alpha=0.8, 
+                                  cmap=cmap, vmin=vmin, vmax=vmax, edgecolors='none', rasterized=True)
+            
+            # 标记lead variant - 更显眼的样式
+            if lead_mask.any():
+                ax2.scatter(lead_pos, df.loc[lead_idx, "PIP"], 
+                           c='darkred', s=120, marker='D', edgecolors='white', linewidth=2, 
+                           label='Lead Variant', zorder=10, alpha=0.9)
+            
+            # 高亮可信集变体 - 支持多个可信集，用不同颜色和形状区分
+            if credible_sets_df is not None and not credible_sets_df.empty:
+                # 获取所有可信集的名称
+                unique_cs = credible_sets_df["credible_set"].unique()
+                # 选择与 viridis 配色协调的边框颜色 - 高对比度，易于在紫-蓝-绿-黄背景上识别
+                cs_colors = ['red', 'orange', 'white', 'black', 'magenta', 'cyan']  # 高对比度边框，与viridis形成清晰区分
+                cs_markers = ['o', 's', '^', 'v', '<', '>']  # 多个可信集的形状
+                
+                for i, cs_name in enumerate(unique_cs):
+                    cs_variants_in_set = set(credible_sets_df[credible_sets_df["credible_set"] == cs_name]["variant_id"].unique())
+                    cs_mask_in_set = df["SNPID"].isin(cs_variants_in_set)
+                    
+                    if cs_mask_in_set.any():
+                        cs_indices_in_set = [list(df.index).index(idx) for idx in df[cs_mask_in_set].index]
+                        # 获取这些变体的 LD R² 值用于颜色映射
+                        cs_ld_r2_values = df.loc[df[cs_mask_in_set].index, "LD_R2_WITH_LEAD"].fillna(0.0) if "LD_R2_WITH_LEAD" in df.columns else [0.0] * len(cs_indices_in_set)
+                        
+                        color = cs_colors[i % len(cs_colors)]
+                        marker = cs_markers[i % len(cs_markers)]
+                        
+                        # 使用 LD R² 值映射颜色，但用固定颜色的边框来区分可信集 - 学术样式
+                        ax2.scatter(cs_indices_in_set, df.loc[df[cs_mask_in_set].index, "PIP"],
+                                   c=cs_ld_r2_values, s=60, marker=marker, cmap=cmap, vmin=vmin, vmax=vmax,
+                                   edgecolors=color, linewidth=2.0, alpha=0.9, zorder=5, rasterized=True)
+            
+            # 添加PIP阈值线 - 学术标准样式
+            ax2.axhline(y=0.1, color='#2ca02c', linestyle='--', linewidth=2, alpha=0.8, 
+                       label='PIP = 0.1', zorder=1)
+            ax2.axhline(y=0.5, color='#ff7f0e', linestyle='--', linewidth=2, alpha=0.8, 
+                       label='PIP = 0.5', zorder=1)
+            ax2.axhline(y=0.9, color='#d62728', linestyle='--', linewidth=2, alpha=0.8, 
+                       label='PIP = 0.9', zorder=1)
+            
+            # 为图例添加清晰的可信集标识（仅显示边框颜色和形状）
+            if credible_sets_df is not None and not credible_sets_df.empty:
+                unique_cs = credible_sets_df["credible_set"].unique()
+                cs_colors = ['red', 'orange', 'white', 'black', 'magenta', 'cyan']
+                cs_markers = ['o', 's', '^', 'v', '<', '>']
+                for i, cs_name in enumerate(unique_cs):
+                    color = cs_colors[i % len(cs_colors)]
+                    marker = cs_markers[i % len(cs_markers)]
+                    # 添加专门的图例项，使用更好的学术样式
+                    ax2.scatter([], [], c='lightgray', s=60, marker=marker, 
+                               edgecolors=color, linewidth=2.0, alpha=0.9,
+                               label=f'Credible Set {cs_name[2:]}')
+            
+            ax2.set_xlabel('Variant Index', fontweight='bold')
+            ax2.set_ylabel('Posterior Inclusion Probability (PIP)', fontweight='bold')
+            ax2.set_title(f'{lead_variant} — SuSiE Posterior Inclusion Probabilities', fontweight='bold', pad=15)
+            # 优化图例样式
+            legend2 = ax2.legend(loc='upper right', fontsize=9, frameon=True, fancybox=True, 
+                               shadow=True, framealpha=0.9, edgecolor='gray',
+                               ncol=2 if credible_sets_df is not None and len(credible_sets_df["credible_set"].unique()) > 3 else 1)
+            legend2.get_frame().set_linewidth(1.2)
+            ax2.grid(True, alpha=0.4, linestyle='-', linewidth=0.8)
+            ax2.set_ylim(-0.05, 1.05)  # 稍微扩展Y轴范围以获得更好的视觉效果
+            
+            # 添加统一的颜色条（基于 LD R² with Lead） - 学术样式
+            # 在右侧添加颜色条，跨越两个子图的高度
+            cbar = fig.colorbar(scatter2, ax=[ax1, ax2], fraction=0.015, pad=0.02, aspect=25, shrink=0.8)
+            cbar.set_label('LD R² with Lead Variant', rotation=270, labelpad=20, fontweight='bold', fontsize=11)
+            cbar.ax.tick_params(labelsize=9, width=1.2)
+            cbar.outline.set_linewidth(1.2)
+            
+            # 添加整体标题，包含可信集信息 - 学术样式
+            n_credible_sets = len(credible_sets_df["credible_set"].unique()) if credible_sets_df is not None and not credible_sets_df.empty else 0
+            n_credible_variants = len(credible_sets_df) if credible_sets_df is not None and not credible_sets_df.empty else 0
+            
+            fig.suptitle(f'Fine-mapping Results for {lead_variant}\n'
+                        f'Total variants: {len(df):,} | '
+                        f'Max -log$_{{10}}$(P): {df["-log10P"].max():.2f} | '
+                        f'Max PIP: {df["PIP"].max():.3f}\n'
+                        f'Credible Sets: {n_credible_sets} | CS variants: {n_credible_variants}', 
+                        fontsize=13, fontweight='bold', y=0.98)
+            
+            # 优化布局和保存 - 学术发表标准
+            plt.tight_layout(rect=[0, 0, 0.98, 0.95])  # 为suptitle和colorbar留出空间
+            pdf.savefig(fig, bbox_inches='tight', dpi=dpi, facecolor='white', edgecolor='none')
+            plt.close(fig)
+            
+            _log(f"完成 {lead_variant}: {len(df)} 个变体")
+    
+    # 恢复默认matplotlib设置
+    plt.rcdefaults()
+    
+    _log(f"曼哈顿图已保存到: {out_pdf_path}")
+    return out_pdf_path
 
 
