@@ -212,6 +212,9 @@ def build_ld_matrices_from_summary(
     strict: bool = False,
     id_column: str = "SNPID",
     logger: Optional[logging.Logger] = None,
+    output_prefix: Optional[str] = None,
+    case_prefix: str = "PHOM",
+    sample_mode: str = "all",
 ) -> str:
     """
     功能：
@@ -235,6 +238,9 @@ def build_ld_matrices_from_summary(
         strict (bool): 若 True，遇到 lead 在 pkl 中缺失时立即抛错；默认 False 则跳过并记录。
         id_column (str): 在 sum_stat DataFrame 中作为变体 ID 的列名，默认 "SNPID"。
         logger (Optional[logging.Logger]): 可选日志对象；若不提供，使用 print 输出关键信息。
+        output_prefix (Optional[str]): 控制输出 JSON 文件名的前缀；若为空则使用默认文件名。
+        case_prefix (str): 病例样本 ID 的前缀（用于 .fam 的 IID 前缀匹配），默认 "PHOM"。
+        sample_mode (str): 样本选择模式，"all"（默认，使用所有样本）|"case"（仅病例，IID 以 case_prefix 开头）|"ctrl"（仅对照，IID 不以 case_prefix 开头）。
 
     返回：
         str：新生成的汇总 JSON 文件路径。
@@ -250,6 +256,10 @@ def build_ld_matrices_from_summary(
           其中 lead_sanitized 会将不安全字符替换为下划线。
         - PLINK 输出解析：使用 `--r square` / `--r2 square` 时，PLINK 会生成 `.ld` 矩阵文件。
           本函数直接以整数索引顺序读取，不再依赖 .ld.id 文件。
+        - 汇总 JSON 文件名：当提供 output_prefix 时，写为
+          {out_dir}/{output_prefix}.ld_matrices_by_lead.summary.json；
+          否则为 {out_dir}/ld_matrices_by_lead.summary.json
+        - 样本选择：依据 {bed_prefix}.fam 中的 IID 与 case_prefix 前缀匹配实现；当 sample_mode != "all" 时将通过 `--keep` 传递给 PLINK。会在汇总 JSON 中记录模式与纳入样本数。
     """
     # ---------- 帮助函数 ----------
     def _log(msg: str):
@@ -300,6 +310,39 @@ def build_ld_matrices_from_summary(
     # - 其他中间/明细输出写在 out_dir/tmp
     tmp_dir = os.path.join(out_dir, "tmp")
     os.makedirs(tmp_dir, exist_ok=True)
+
+    # ---------- 样本选择（case/ctrl/all） ----------
+    fam_path = f"{bed_prefix}.fam"
+    if not os.path.exists(fam_path):
+        raise FileNotFoundError(f"缺少 FAM 文件：{fam_path}")
+    fam_pairs = []
+    with open(fam_path, "r") as ff:
+        for line in ff:
+            parts = line.rstrip("\n").split()
+            if len(parts) >= 2:
+                fam_pairs.append((parts[0], parts[1]))  # (FID, IID)
+    n_total_samples = len(fam_pairs)
+    kept_pairs = fam_pairs
+    keep_path = None
+
+    smode = str(sample_mode).lower().strip()
+    if smode not in ("all", "case", "ctrl"):
+        raise ValueError(f"sample_mode 必须是 'all'|'case'|'ctrl' 之一，当前：{sample_mode}")
+
+    if smode == "case":
+        kept_pairs = [p for p in fam_pairs if p[1].startswith(case_prefix)]
+    elif smode == "ctrl":
+        kept_pairs = [p for p in fam_pairs if not p[1].startswith(case_prefix)]
+
+    n_kept = len(kept_pairs)
+    if smode != "all":
+        if n_kept == 0:
+            raise ValueError(f"样本选择结果为空：sample_mode={sample_mode}, case_prefix={case_prefix}")
+        keep_path = os.path.join(tmp_dir, f"samples.keep.{smode}.txt")
+        with open(keep_path, "w") as kf:
+            for fid, iid in kept_pairs:
+                kf.write(f"{fid}\t{iid}\n")
+    _log(f"样本选择：mode={smode}，case_prefix={case_prefix}，纳入 {n_kept}/{n_total_samples} 个样本")
     
     # ---------- 载入 lead 表与 locus 字典 ----------
     lead_df = pd.read_csv(lead_tsv_path, sep="\t", dtype={id_column: str})
@@ -318,6 +361,16 @@ def build_ld_matrices_from_summary(
             "plink_path": plink_path,
             "out_dir": os.path.abspath(out_dir),
             "id_column": id_column,
+            "output_prefix": output_prefix,
+            "case_prefix": case_prefix,
+            "sample_mode": smode,
+        },
+        "sample_selection": {
+            "mode": smode,
+            "case_prefix": case_prefix,
+            "n_total": n_total_samples,
+            "n_kept": n_kept,
+            "keep_file": keep_path,
         },
         "per_lead_outputs": {},
     }
@@ -404,6 +457,8 @@ def build_ld_matrices_from_summary(
             "--extract", extract_path,
             "--out", r_prefix,
         ]
+        if keep_path is not None:
+            cmd_r.extend(["--keep", keep_path])
         _log(f"运行：{' '.join(cmd_r)}")
         r_log_path = f"{r_prefix}.plink.log"
         with open(r_log_path, "w") as rlog:
@@ -420,13 +475,13 @@ def build_ld_matrices_from_summary(
         # 为 R 矩阵设置标签：优先使用 extract 列表；必要时尝试 .bim 对齐
         extract_ids = _load_extract_ids(extract_path)
         if len(extract_ids) == r_df.shape[0]:
-            r_df.index = extract_ids
+            r_df.index = extract_ids #type: ignore
             r_df.columns = extract_ids
         else:
             _log(f"警告：R 阶数({r_df.shape[0]})与 extract 数量({len(extract_ids)})不一致，尝试基于 .bim 对齐。")
             inferred = _infer_labels_from_bim(bed_prefix, extract_ids, r_df.shape[0])
             if inferred is not None:
-                r_df.index = inferred
+                r_df.index = inferred #type: ignore
                 r_df.columns = inferred
             else:
                 _log("警告：.bim 对齐未获得一致数量，保留整数索引。")
@@ -444,6 +499,8 @@ def build_ld_matrices_from_summary(
             "--extract", extract_path,
             "--out", r2_prefix,
         ]
+        if keep_path is not None:
+            cmd_r2.extend(["--keep", keep_path])
         _log(f"运行：{' '.join(cmd_r2)}")
         r2_log_path = f"{r2_prefix}.plink.log"
         with open(r2_log_path, "w") as r2log:
@@ -463,7 +520,7 @@ def build_ld_matrices_from_summary(
             # 为 R² 矩阵设置标签：与 R 相同策略
             extract_ids = _load_extract_ids(extract_path)
             if len(extract_ids) == r2_df.shape[0]:
-                r2_df.index = extract_ids
+                r2_df.index = extract_ids #type: ignore
                 r2_df.columns = extract_ids
             else:
                 _log(f"警告：R² 阶数({r2_df.shape[0]})与 extract 数量({len(extract_ids)})不一致，尝试基于 .bim 对齐。")
@@ -492,9 +549,299 @@ def build_ld_matrices_from_summary(
         }
     
     # 写出汇总 JSON
-    final_json = os.path.join(out_dir, "ld_matrices_by_lead.summary.json")
+    if output_prefix is None or str(output_prefix).strip() == "":
+        final_json = os.path.join(out_dir, "ld_matrices_by_lead.summary.json")
+    else:
+        final_json = os.path.join(out_dir, f"{output_prefix}.ld_matrices_by_lead.summary.json")
     with open(final_json, "w", encoding="utf-8") as jf:
         json.dump(out_index, jf, ensure_ascii=False, indent=2)
     _log(f"完成：输出索引 JSON -> {final_json}")
     return final_json
+
+
+def plot_ld_heatmaps_from_index(
+    index_json_path: str,
+    out_pdf_path: Optional[str] = None,
+    threads: int = 8,
+    dpi: int = 150,
+    show_lead_cross: bool = True,
+    output_prefix: Optional[str] = None,
+) -> str:
+    """
+    基于 `build_ld_matrices_from_summary` 产出的汇总 JSON（index_json_path），
+    为每个 lead 生成一页 PDF：左侧为 R（相关系数，范围 [-1, 1]）热图，右侧为 R²（决定系数，范围 [0, 1]）热图。
+    若某 lead 缺少 R²，则该页仅绘制 R 并在标题中标注“无 R²”。
+
+    参数：
+        index_json_path (str): `ld_matrices_by_lead.summary.json` 的路径（或带前缀版本，如 `{prefix}.ld_matrices_by_lead.summary.json`）。
+        out_pdf_path (Optional[str]): 输出 PDF 路径；若为空则与 JSON 同目录同前缀，名为 `{basename}.ld_heatmaps.pdf`。
+        output_prefix (Optional[str]): 输出 PDF 文件名前缀。若提供，则默认输出为 `{output_prefix}.ld_heatmaps.pdf`。
+        threads (int): 并行加载与预处理的最大线程数，上限 8（绘图在主进程顺序执行以避免 matplotlib 并发问题）。
+        dpi (int): 每页图像的渲染分辨率 DPI。
+        show_lead_cross (bool): 是否绘制 lead 变体的交叉引导线（默认 True 为绘制；False 不绘制）。
+
+    返回：
+        str：输出 PDF 的绝对路径。
+    """
+    # 读取索引 JSON
+    with open(index_json_path, "r", encoding="utf-8") as f:
+        index_meta = json.load(f)
+    per_lead = index_meta.get("per_lead_outputs", {})
+    if not isinstance(per_lead, dict) or len(per_lead) == 0:
+        raise ValueError("索引 JSON 中缺少 per_lead_outputs 或为空。")
+
+    # 使用默认样式
+    plt.style.use("default")
+
+    # 解析输出 PDF 路径
+    if output_prefix is not None and (out_pdf_path is None or str(out_pdf_path).strip() == ""):
+        base_dir = os.path.dirname(os.path.abspath(index_json_path))
+        out_pdf_path = os.path.join(base_dir, f"{output_prefix}.ld_heatmaps.pdf")
+    elif out_pdf_path is None or str(out_pdf_path).strip() == "":
+        base_dir = os.path.dirname(os.path.abspath(index_json_path))
+        base_name = os.path.splitext(os.path.basename(index_json_path))[0]
+        out_pdf_path = os.path.join(base_dir, f"{base_name}.ld_heatmaps.pdf")
+    out_pdf_path = os.path.abspath(out_pdf_path)
+
+    # 并行加载矩阵（仅做 I/O 与数组预处理；绘图在主线程）
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    max_workers = max(1, min(int(threads), 8))
+
+    # ---------- helpers: 染色体/位置排序 ----------
+    def _chr_rank(ch: str) -> int:
+        """将 chr 字符串映射为自然排序数值：1..22->1..22, X->23, Y->24, M/MT->25, 其他->9999"""
+        s = str(ch).strip()
+        if s.upper().startswith("CHR"):
+            s = s[3:]
+        s_up = s.upper()
+        if s_up in ("X",):
+            return 23
+        if s_up in ("Y",):
+            return 24
+        if s_up in ("M", "MT"):
+            return 25
+        try:
+            val = int(s)
+            if 1 <= val <= 22:
+                return val
+            return 9999
+        except Exception:
+            return 9999
+
+    def _parse_lead_sig(sig: str):
+        """解析 'CHROM:POS:REF:ALT' 或相近格式；返回 (chr_rank, pos)；失败返回 (9999, inf)"""
+        if sig is None:
+            return (9999, float("inf"))
+        parts = str(sig).split(":")
+        if len(parts) < 2:
+            return (9999, float("inf"))
+        chr_key = _chr_rank(parts[0])
+        try:
+            pos = int(parts[1])
+        except Exception:
+            pos = float("inf")
+        return (chr_key, pos)
+
+    # ---------- helpers: 定位 lead 在标签列表中的索引，并在热图上标记 ----------
+    def _normalize_chr(s: str) -> str:
+        s = s.strip()
+        if s.upper().startswith("CHR"):
+            return s[3:]
+        return s
+
+    def _locate_lead_index(labels: list, lead: str) -> Optional[int]:
+        """在标签列表中查找 lead 的位置。支持以下匹配：
+        1) 完整 ID 精确匹配（如 CHR3:154069965:A:G）
+        2) 仅按 CHR:POS 匹配（忽略 chr/CHR 前缀差异）
+        """
+        if labels is None or len(labels) == 0:
+            return None
+        # 1) 精确匹配
+        try:
+            return labels.index(lead)
+        except ValueError:
+            pass
+        # 2) 位置匹配
+        #   解析 lead 的 chr 和 pos
+        parts = str(lead).split(":")
+        if len(parts) >= 2:
+            lead_chr = _normalize_chr(parts[0])
+            try:
+                lead_pos = int(parts[1])
+            except Exception:
+                lead_pos = None
+            if lead_pos is not None:
+                for i, lab in enumerate(labels):
+                    p = str(lab).split(":")
+                    if len(p) >= 2:
+                        if _normalize_chr(p[0]) == lead_chr:
+                            try:
+                                if int(p[1]) == lead_pos:
+                                    return i
+                            except Exception:
+                                continue
+        return None
+
+    def _mark_lead(ax: plt.Axes, idx: Optional[int], n: int): # type: ignore
+        """在热图上画出 lead 的位置十字标记（行/列）"""
+        if idx is None or idx < 0 or idx >= n:
+            return
+        ax.axhline(y=idx, color="k", linewidth=1.2, alpha=0.9)
+        ax.axvline(x=idx, color="k", linewidth=1.2, alpha=0.9)
+        # 叠加一层浅色线增强可见性（兼容深色背景配色）
+        ax.axhline(y=idx, color="w", linewidth=0.6, alpha=0.7)
+        ax.axvline(x=idx, color="w", linewidth=0.6, alpha=0.7)
+
+    def _read_matrix(tsv_path: str):
+        if tsv_path is None:
+            return None, None, None
+        if not os.path.exists(tsv_path):
+            return None, None, f"文件缺失：{tsv_path}"
+        try:
+            # 以第一列为索引读取；若文件为方阵且带有 SNPID 行列标签，可直接读取为 DataFrame
+            df = pd.read_csv(tsv_path, sep="\t", index_col=0)
+            # 确保为数值类型（有时 read_csv 可能把列名解析为字符串）
+            df = df.apply(pd.to_numeric, errors="coerce")
+            arr = df.to_numpy(dtype=float)
+            labels = df.index.tolist()
+            # 简单一致性检查（方阵）
+            if arr.shape[0] != arr.shape[1]:
+                return None, None, f"非方阵：{tsv_path} -> 形状 {arr.shape}"
+            return (arr, labels, None)
+        except Exception as e:
+            return None, None, f"读取失败：{tsv_path}；原因：{e}"
+
+    def _job(lead_id: str, lead_rec: dict):
+        r_path = lead_rec.get("ld_r_tsv")
+        r2_path = lead_rec.get("ld_r2_tsv")
+        r_arr, r_labels, r_err = _read_matrix(r_path) # type: ignore
+        r2_arr, r2_labels, r2_err = _read_matrix(r2_path) if r2_path else (None, None, None)
+        return {
+            "lead_id": lead_id,
+            "r": r_arr,
+            "r_labels": r_labels,
+            "r_err": r_err,
+            "r2": r2_arr,
+            "r2_labels": r2_labels,
+            "r2_err": r2_err,
+        }
+
+    results = []
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        future_map = {ex.submit(_job, lid, rec): (lid, rec) for lid, rec in per_lead.items()}
+        for fut in as_completed(future_map):
+            results.append(fut.result())
+
+    # 按基因组顺序排序：chr1..22, X, Y, M；POS 升序；兼容不带 'chr' 的形式
+    sort_items = []
+    for res in results:
+        lead_id = res["lead_id"]
+        lead_rec = per_lead.get(lead_id, {})
+        # 优先使用 per_lead 的 lead_sig（已知格式 CHROM:POS:REF:ALT）
+        lead_sig = lead_rec.get("lead_sig", None)
+        # 若缺失则退回用 lead_id 自身尝试解析
+        sig_for_sort = lead_sig if lead_sig else lead_id
+        chr_key, pos = _parse_lead_sig(sig_for_sort)
+        sort_items.append((chr_key, pos, str(lead_id), res))
+    sort_items.sort(key=lambda t: (t[0], t[1], t[2]))
+    results = [t[3] for t in sort_items]
+
+    # 逐页绘图（主进程，避免 matplotlib 并发问题）
+    from matplotlib.backends.backend_pdf import PdfPages
+    with PdfPages(out_pdf_path) as pdf:
+        for res in results:
+            lead_id = res["lead_id"]
+            r_arr, r2_arr = res["r"], res["r2"]
+            r_err, r2_err = res["r_err"], res["r2_err"]
+
+            if r_arr is None and r2_arr is None:
+                # 两者都缺失，跳过该 lead
+                continue
+
+            # 决定本页 subplot 列数
+            ncols = 2 if r_arr is not None and r2_arr is not None else 1
+            fig_w = 10 if ncols == 2 else 6
+            fig_h = 5
+            fig, axes = plt.subplots(1, ncols, figsize=(fig_w, fig_h), dpi=dpi)
+            # 两个分图之间增加空隙
+            fig.subplots_adjust(wspace=0.35, hspace=0.1)
+            if ncols == 1:
+                axes = [axes]
+
+            # 绘制 R
+            if r_arr is not None:
+                ax = axes[0]
+                im = ax.imshow(r_arr, vmin=-1.0, vmax=1.0, interpolation="nearest", aspect="equal")
+                ax.set_aspect('equal', adjustable='box')
+                try:
+                    ax.set_box_aspect(1)
+                except Exception:
+                    pass
+                # 标记 lead 在热图中的位置
+                lead_idx = _locate_lead_index(res.get("r_labels"), lead_id)
+                if show_lead_cross:
+                    _mark_lead(ax, lead_idx, r_arr.shape[0])
+                ax.set_title(f"{lead_id} — R (n={r_arr.shape[0]})" + (f"\n注意：{r_err}" if r_err else ""))
+                ax.set_xlabel("Variants")
+                ax.set_ylabel("Variants")
+                # 大矩阵时隐藏刻度标签以提升绘制速度
+                ax.set_xticks([])
+                ax.set_yticks([])
+                cbar = fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+                cbar.set_label("LD R")
+            else:
+                axes[0].set_visible(False)
+
+            # 绘制 R²
+            if ncols == 2 and r2_arr is not None:
+                ax = axes[1]
+                im2 = ax.imshow(r2_arr, vmin=0.0, vmax=1.0, interpolation="nearest", aspect="equal")
+                ax.set_aspect('equal', adjustable='box')
+                try:
+                    ax.set_box_aspect(1)
+                except Exception:
+                    pass
+                # 标记 lead 在热图中的位置
+                lead_idx2 = _locate_lead_index(res.get("r2_labels"), lead_id)
+                if show_lead_cross:
+                    _mark_lead(ax, lead_idx2, r2_arr.shape[0])
+                ax.set_title(f"{lead_id} — R² (n={r2_arr.shape[0]})" + (f"\n注意：{r2_err}" if r2_err else ""))
+                ax.set_xlabel("Variants")
+                ax.set_ylabel("Variants")
+                ax.set_xticks([])
+                ax.set_yticks([])
+                cbar2 = fig.colorbar(im2, ax=ax, fraction=0.046, pad=0.04)
+                cbar2.set_label("LD R²")
+            elif ncols == 1 and r2_arr is not None and r_arr is None:
+                # 只有 R² 的情况
+                ax = axes[0]
+                im2 = ax.imshow(r2_arr, vmin=0.0, vmax=1.0, interpolation="nearest", aspect="equal")
+                ax.set_aspect('equal', adjustable='box')
+                try:
+                    ax.set_box_aspect(1)
+                except Exception:
+                    pass
+                # 标记 lead 在热图中的位置
+                lead_idx2 = _locate_lead_index(res.get("r2_labels"), lead_id)
+                if show_lead_cross:
+                    _mark_lead(ax, lead_idx2, r2_arr.shape[0])
+                ax.set_title(f"{lead_id} — R² (n={r2_arr.shape[0]})" + (f"\n注意：{r2_err}" if r2_err else ""))
+                ax.set_xlabel("Variants")
+                ax.set_ylabel("Variants")
+                ax.set_xticks([])
+                ax.set_yticks([])
+                cbar2 = fig.colorbar(im2, ax=ax, fraction=0.046, pad=0.04)
+                cbar2.set_label("LD R²")
+            elif r2_arr is None and r_arr is not None:
+                # 缺少 R²，给出提示
+                axes[0].set_title(f"{lead_id} — 仅有 R；无 R² 输出" + (f"\n注意：{r_err}" if r_err else ""))
+
+            fig.tight_layout()
+            pdf.savefig(fig)
+            plt.close(fig)
+
+    return out_pdf_path
+
+
+# new funtion 
 

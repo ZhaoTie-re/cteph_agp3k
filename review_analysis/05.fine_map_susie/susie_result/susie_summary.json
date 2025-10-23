@@ -1,0 +1,23 @@
+{
+  "chr3:154069965:A:G": {
+    "json_file": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/05.fine_map_susie/susie_result/chr3_154069965_A_G.susie_results.json",
+    "log_file": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/05.fine_map_susie/susie_result/chr3_154069965_A_G.susie_analysis.log",
+    "json_exists": true,
+    "log_exists": true,
+    "formatted_id": "chr3_154069965_A_G"
+  },
+  "chr16:53887925:T:C": {
+    "json_file": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/05.fine_map_susie/susie_result/chr16_53887925_T_C.susie_results.json",
+    "log_file": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/05.fine_map_susie/susie_result/chr16_53887925_T_C.susie_analysis.log",
+    "json_exists": true,
+    "log_exists": true,
+    "formatted_id": "chr16_53887925_T_C"
+  },
+  "chr17:13528059:G:A": {
+    "json_file": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/05.fine_map_susie/susie_result/chr17_13528059_G_A.susie_results.json",
+    "log_file": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/05.fine_map_susie/susie_result/chr17_13528059_G_A.susie_analysis.log",
+    "json_exists": true,
+    "log_exists": true,
+    "formatted_id": "chr17_13528059_G_A"
+  }
+}
