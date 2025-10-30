@@ -1,0 +1,36 @@
+{
+  "created_at": "2025-10-29 23:40:32",
+  "inputs": {
+    "merged_sumstat_file": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/snippet_analysis/02.array_check_impute/cteph_agp3k.array_wgs_compration.merged_sumstat.tsv",
+    "p_threshold": null,
+    "figsize": [
+      10,
+      8
+    ],
+    "alpha": 0.6,
+    "point_size": 20,
+    "save_pdf": false
+  },
+  "outputs": {
+    "png_file": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/snippet_analysis/02.array_check_impute/cteph_agp3k.array_wgs_compration.png",
+    "pdf_file": null
+  },
+  "statistics": {
+    "n_variants_plotted": 4940084,
+    "beta_range_wgs": [
+      -2.6950929164886475,
+      2.5651724338531494
+    ],
+    "beta_range_array": [
+      -2.8901586532592773,
+      2.758483409881592
+    ],
+    "pearson_correlation": 0.7699739049922263,
+    "correlation_p_value": 0.0
+  },
+  "plot_settings": {
+    "add_diagonal": true,
+    "add_correlation": true,
+    "dpi": 300
+  }
+}
