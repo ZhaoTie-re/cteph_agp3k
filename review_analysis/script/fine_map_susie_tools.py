@@ -20,7 +20,8 @@ def build_lead_and_locus_tables(
     range_bp: int = 1_000_000,
     windowsizekb: int = 500,
     sig_level: float = 5e-8,
-    ref_seq_path: str = "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/nagasaki_pipeline/data/hs38DH.fa",
+    ref_seq_path: Optional[str] = "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/nagasaki_pipeline/data/hs38DH.fa",
+    enable_harmonize: bool = True,
     output_prefix: Optional[str] = None,
     log_path: Optional[str] = None,
     verbose: Optional[bool] = False,
@@ -33,7 +34,8 @@ def build_lead_and_locus_tables(
         range_bp (int): 每个 locus 的总碱基范围（对称窗口），例如 1_000_000 表示 ±500kb。
         windowsizekb (int): 判定 lead 变体时的窗口大小（单位 KB），传入 gwaslab.get_lead。
         sig_level (float): genome-wide 显著性阈值，例如 5e-8。
-        ref_seq_path (str): 参考基因组 fasta 路径（用于 harmonize）。
+        ref_seq_path (Optional[str]): 参考基因组 fasta 路径（用于 harmonize）。若为 None 或 enable_harmonize=False，则跳过 harmonize。
+        enable_harmonize (bool): 是否对 locus 数据进行 harmonize 处理，默认 True。设为 False 时不进行 harmonize，无论 ref_seq_path 是否提供。
         output_prefix (Optional[str]): 输出文件前缀。若仅为文件名不含路径，则默认写入当前工作目录；若为 None，则自动用输入文件名生成 `{basename}.susie_prep` 前缀。
         log_path (Optional[str]): 日志文件路径；若为 None，则自动使用 `{output_prefix}.log`。
         verbose (Optional[bool]): 是否在调用 gwaslab 的相关函数时开启详细输出；默认 False。内部对不支持 verbose 参数的 gwaslab 版本会自动降级为不传该参数。
@@ -102,6 +104,7 @@ def build_lead_and_locus_tables(
     logger.info(f"输入文件：{plink_stats_file}")
     logger.info(f"参数：range_bp={range_bp}；windowsizekb={windowsizekb}；sig_level={sig_level}")
     logger.info(f"参考序列（用于harmonize）：{ref_seq_path}")
+    logger.info(f"是否启用harmonize：{enable_harmonize}")
 
     t0 = time.time()
 
@@ -167,7 +170,13 @@ def build_lead_and_locus_tables(
 
             # 填充与协调等位方向
             _call_with_verbose(locus.fill_data, to_fill=["BETA"]) # type: ignore
-            _call_with_verbose(locus.harmonize, basic_check=False, ref_seq=ref_seq_path) # type: ignore
+            
+            # 根据参数决定是否进行 harmonize
+            if enable_harmonize and ref_seq_path is not None:
+                _call_with_verbose(locus.harmonize, basic_check=False, ref_seq=ref_seq_path) # type: ignore
+                logger.info(f"已对 locus {snpid} 完成 harmonize 处理")
+            else:
+                logger.info(f"跳过 locus {snpid} 的 harmonize 处理 (enable_harmonize={enable_harmonize}, ref_seq_path={ref_seq_path})")
 
             # 保存 DataFrame
             locus_summaries[str(snpid)] = locus.data # type: ignore
@@ -186,6 +195,7 @@ def build_lead_and_locus_tables(
             "windowsizekb": int(windowsizekb),
             "sig_level": float(sig_level),
             "ref_seq_path": ref_seq_path,
+            "enable_harmonize": bool(enable_harmonize),
         },
         "outputs": {
             "lead_tsv": lead_tsv,
