@@ -1,0 +1,44 @@
+{
+  "snp_id": "chr16:53888585:A:G",
+  "file1_prefix": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/19.tommo_panel_filter/cteph_agp3k.lowfreq_common",
+  "file2_prefix": "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/snippet_analysis/02.array_check_impute/03.extract_common/cteph_agp3k.array.common",
+  "n_common_samples": 1689,
+  "missing_mode": "exclude_any",
+  "confusion_matrix": {
+    "file1_GT_0": {
+      "file2_GT_0": 990,
+      "file2_GT_1": 2,
+      "file2_GT_2": 0,
+      "file2_GT_missing": 0
+    },
+    "file1_GT_1": {
+      "file2_GT_0": 4,
+      "file2_GT_1": 509,
+      "file2_GT_2": 0,
+      "file2_GT_missing": 0
+    },
+    "file1_GT_2": {
+      "file2_GT_0": 0,
+      "file2_GT_1": 2,
+      "file2_GT_2": 88,
+      "file2_GT_missing": 0
+    },
+    "file1_GT_missing": {
+      "file2_GT_0": 49,
+      "file2_GT_1": 39,
+      "file2_GT_2": 6,
+      "file2_GT_missing": 0
+    }
+  },
+  "file1_stats": {
+    "aaf": 0.21724137931034482,
+    "miss_rate": 0.055654233274126705
+  },
+  "file2_stats": {
+    "aaf": 0.21906453522794553,
+    "miss_rate": 0.0
+  },
+  "concordance_rate": 0.9949843260188088,
+  "n_concordant": 1587,
+  "n_compared": 1595
+}
