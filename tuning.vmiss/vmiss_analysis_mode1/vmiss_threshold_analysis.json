@@ -1,0 +1,45 @@
+{
+  "analysis_mode": 1,
+  "maf_thresholds": [
+    0.01,
+    0.05
+  ],
+  "hist_step": 0.01,
+  "cdf_step_dict": {
+    "default": 0.001
+  },
+  "bin_position": "right",
+  "knee_parameters": {
+    "curve": "concave",
+    "direction": "increasing",
+    "S": 2.0,
+    "weight_x": 8.0,
+    "weight_y": 1.0
+  },
+  "group_statistics": {
+    "VMISS": {
+      "total_variants": 39221031,
+      "vmiss_col": "VMISS",
+      "maf_group": "All",
+      "vmiss_min": 0.0,
+      "vmiss_max": 0.9993370175361633,
+      "vmiss_mean": 0.060876473784446716,
+      "vmiss_median": 0.026847900822758675
+    }
+  },
+  "knee_points": {
+    "VMISS": {
+      "knee_found": true,
+      "knee_vmiss": 0.042,
+      "knee_cumulative_percentage": 79.50503391917464,
+      "knee_cumulative_count": 31182694,
+      "total_variants": 39221031,
+      "vmiss_col": "VMISS",
+      "maf_group": "All",
+      "adaptive_knee_S": 6.0,
+      "min_cumulative_filter": 5.0
+    }
+  },
+  "plot_path": "./vmiss_analysis_mode1/vmiss_distribution_analysis_mode1.png",
+  "json_path": "./vmiss_analysis_mode1/vmiss_threshold_analysis.json"
+}

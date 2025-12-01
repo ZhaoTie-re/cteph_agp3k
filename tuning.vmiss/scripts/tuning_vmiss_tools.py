@@ -654,7 +654,10 @@ def analyze_vmiss_thresholds(
     output_dir: str,
     analysis_mode: Literal[1, 2, 3, 4] = 4,
     maf_thresholds: tuple = (0.01, 0.05),
-    vmiss_step: float = 0.01,
+    hist_step: float = 0.01,
+    cdf_step: Optional[float] = None,
+    cdf_step_15x: Optional[float] = None,
+    cdf_step_30x: Optional[float] = None,
     bin_position: Literal['left', 'right'] = 'left',
     knee_curve: str = 'concave',
     knee_direction: str = 'increasing',
@@ -677,7 +680,12 @@ def analyze_vmiss_thresholds(
             3: 针对三组MAF变体，识别VMISS（3个参数建议）
             4: 针对三组MAF变体，识别VMISS_15X和VMISS_30X（6个参数建议）
         maf_thresholds: MAF分组阈值，默认(0.01, 0.05)
-        vmiss_step: VMISS阈值步长，默认0.01
+        hist_step: 直方图bin的步长，默认0.01（固定，用于绘制分布）
+        cdf_step: CDF计算的步长，默认None（自动根据模式设置）
+            - 模式1/3: 默认0.001
+            - 模式2/4: 由cdf_step_15x和cdf_step_30x分别指定
+        cdf_step_15x: 15X组CDF计算的步长，默认0.001（仅模式2/4有效）
+        cdf_step_30x: 30X组CDF计算的步长，默认0.01（仅模式2/4有效）
         bin_position: CDF的x轴坐标定义方式，默认'left'
             'left': 使用bin的左边界（CDF表示≤x的累积比例）
             'right': 使用bin的右边界（CDF表示<x的累积比例，与plink2 --geno行为一致）
@@ -705,6 +713,25 @@ def analyze_vmiss_thresholds(
     logger.info(f"输入文件: {variant_metrics_file}")
     logger.info(f"分析模式: {analysis_mode}")
     logger.info(f"MAF分组阈值: {maf_thresholds}")
+    logger.info(f"直方图步长(hist_step): {hist_step}")
+    
+    # 根据模式自动设置CDF步长
+    if analysis_mode in [1, 3]:
+        # 模式1和3：不分15X和30X，使用统一的cdf_step
+        if cdf_step is None:
+            cdf_step = 0.001  # 默认0.001
+        logger.info(f"CDF步长: {cdf_step}")
+        cdf_step_dict = {'default': cdf_step}
+    elif analysis_mode in [2, 4]:
+        # 模式2和4：分15X和30X，分别设置步长
+        if cdf_step_15x is None:
+            cdf_step_15x = 0.001  # 15X默认0.001
+        if cdf_step_30x is None:
+            cdf_step_30x = 0.01   # 30X默认0.01
+        logger.info(f"CDF步长(15X): {cdf_step_15x}")
+        logger.info(f"CDF步长(30X): {cdf_step_30x}")
+        cdf_step_dict = {'15X': cdf_step_15x, '30X': cdf_step_30x}
+    
     logger.info("="*60)
     
     # 创建输出目录
@@ -723,7 +750,9 @@ def analyze_vmiss_thresholds(
     logger.info("步骤2: 计算VMISS累积分布...")
     cumulative_results = _calculate_cumulative_distribution(
         group_stats, 
-        vmiss_step,
+        hist_step,
+        cdf_step_dict,
+        analysis_mode,
         bin_position
     )
     
@@ -760,7 +789,8 @@ def analyze_vmiss_thresholds(
     results = {
         'analysis_mode': analysis_mode,
         'maf_thresholds': maf_thresholds,
-        'vmiss_step': vmiss_step,
+        'hist_step': hist_step,
+        'cdf_step_dict': cdf_step_dict,
         'bin_position': bin_position,
         'knee_parameters': {
             'curve': knee_curve,
@@ -911,7 +941,9 @@ def _streaming_group_variants(
 
 def _calculate_cumulative_distribution(
     group_stats: dict,
-    vmiss_step: float,
+    hist_step: float,
+    cdf_step_dict: dict,
+    analysis_mode: int,
     bin_position: str = 'left'
 ) -> dict:
     """
@@ -919,8 +951,12 @@ def _calculate_cumulative_distribution(
     
     参数:
         group_stats: 分组统计数据
-        vmiss_step: VMISS步长
-        bin_position: CDF的x轴坐标定义方式 ('left', 'center', 'right')
+        hist_step: 直方图bin的步长（固定，用于绘制分布）
+        cdf_step_dict: CDF计算步长字典
+            - 模式1/3: {'default': 0.001}
+            - 模式2/4: {'15X': 0.001, '30X': 0.01}
+        analysis_mode: 分析模式（用于确定如何选择cdf_step）
+        bin_position: CDF的x轴坐标定义方式 ('left', 'right')
     """
     cumulative_results = {}
     
@@ -935,31 +971,49 @@ def _calculate_cumulative_distribution(
         vmiss_min = stats['vmiss_min']
         vmiss_max = stats['vmiss_max']
         
-        # 将min和max对齐到vmiss_step的倍数，这样bin边界都是整齐的
-        # 向下取整到最近的vmiss_step倍数
-        vmiss_min_aligned = np.floor(vmiss_min / vmiss_step) * vmiss_step
-        # 向上取整到最近的vmiss_step倍数
-        vmiss_max_aligned = np.ceil(vmiss_max / vmiss_step) * vmiss_step
+        # 根据组名确定使用哪个CDF步长
+        if analysis_mode in [1, 3]:
+            # 模式1/3：所有组使用相同步长
+            cdf_step = cdf_step_dict['default']
+        elif analysis_mode in [2, 4]:
+            # 模式2/4：根据组名判断是15X还是30X
+            vmiss_col = stats.get('vmiss_col', '')
+            if '15X' in vmiss_col.upper():
+                cdf_step = cdf_step_dict['15X']
+            elif '30X' in vmiss_col.upper():
+                cdf_step = cdf_step_dict['30X']
+            else:
+                # 备用：如果无法判断，使用默认值
+                cdf_step = cdf_step_dict.get('15X', 0.001)
+                logger.warning(f"无法确定组 [{group_key}] 的步长，使用默认值 {cdf_step}")
+        
+        logger.info(f"  直方图步长: {hist_step}, CDF步长: {cdf_step}")
+        
+        # 将min和max对齐到cdf_step的倍数（CDF计算使用cdf_step）
+        # 向下取整到最近的cdf_step倍数
+        vmiss_min_aligned = np.floor(vmiss_min / cdf_step) * cdf_step
+        # 向上取整到最近的cdf_step倍数
+        vmiss_max_aligned = np.ceil(vmiss_max / cdf_step) * cdf_step
         
         # 对于right边界，需要额外扩展一个步长以确保最后一个bin的右边界包含所有数据
         if bin_position == 'right':
-            vmiss_max_aligned += vmiss_step
+            vmiss_max_aligned += cdf_step
         
         # 确保范围至少包含3个bins
-        if vmiss_max_aligned - vmiss_min_aligned < vmiss_step * 3:
+        if vmiss_max_aligned - vmiss_min_aligned < cdf_step * 3:
             # 向两边各扩展以保证至少3个bins
             center = (vmiss_min_aligned + vmiss_max_aligned) / 2
-            vmiss_min_aligned = center - vmiss_step * 1.5
-            vmiss_max_aligned = center + vmiss_step * 1.5
+            vmiss_min_aligned = center - cdf_step * 1.5
+            vmiss_max_aligned = center + cdf_step * 1.5
         
         # 确保在合理范围内（VMISS应该在[0, 1]之间）
         vmiss_min_aligned = max(0, vmiss_min_aligned)
         vmiss_max_aligned = min(1, vmiss_max_aligned)
         
-        # 生成VMISS值序列（用于绘制分布）
-        # 使用arange确保每个bin宽度都是vmiss_step
-        vmiss_bins = np.arange(vmiss_min_aligned, vmiss_max_aligned + vmiss_step/2, vmiss_step)
-        vmiss_bins = np.round(vmiss_bins, 3)  # 避免浮点精度问题
+        # 生成VMISS值序列（用于CDF计算，使用cdf_step）
+        # 使用arange确保每个bin宽度都是cdf_step
+        vmiss_bins = np.arange(vmiss_min_aligned, vmiss_max_aligned + cdf_step/2, cdf_step)
+        vmiss_bins = np.round(vmiss_bins, 6)  # 提高精度以避免浮点误差
         
         # 计算直方图（VMISS分布）
         hist_counts, _ = np.histogram(vmiss_arr, bins=vmiss_bins)
@@ -985,9 +1039,9 @@ def _calculate_cumulative_distribution(
         
         cumulative_results[group_key] = {
             'vmiss_values': vmiss_x_values.tolist(),  # x轴：VMISS值（根据bin_position确定）
-            'histogram': hist_counts_padded.tolist(),     # 直方图计数（可能包含起始0）
-            'cumulative_counts': cumulative_counts.tolist(),  # 累积计数（包含起始0）
-            'cumulative_percentage': cumulative_percentage.tolist(),  # 累积百分比（包含起始0%）
+            'histogram': hist_counts_padded.tolist(),     # 直方图计数
+            'cumulative_counts': cumulative_counts.tolist(),  # 累积计数
+            'cumulative_percentage': cumulative_percentage.tolist(),  # 累积百分比
             'total_variants': stats['total_variants'],
             'vmiss_col': stats['vmiss_col'],
             'maf_group': stats['maf_group'],
@@ -995,14 +1049,15 @@ def _calculate_cumulative_distribution(
             'vmiss_max': vmiss_max,
             'vmiss_mean': stats['vmiss_mean'],
             'vmiss_median': stats['vmiss_median'],
-            'bin_width': vmiss_step,  # 记录bin宽度
+            'hist_step': hist_step,  # 记录直方图步长
+            'cdf_step': cdf_step,    # 记录CDF步长
             'bin_position': bin_position,  # 记录bin位置定义方式
             'n_bins': len(hist_counts)  # 记录bin数量
         }
         
         logger.info(f"  完成！原始范围: [{vmiss_min:.4f}, {vmiss_max:.4f}], "
                    f"对齐范围: [{vmiss_min_aligned:.4f}, {vmiss_max_aligned:.4f}], "
-                   f"{len(hist_counts)} bins (宽度={vmiss_step})")
+                   f"{len(hist_counts)} bins (CDF步长={cdf_step})")
     
     return cumulative_results
 
@@ -1017,6 +1072,11 @@ def _find_cumulative_knee_points(
 ) -> dict:
     """
     在累积分布曲线上寻找拐点
+    
+    优化策略：
+    1. 根据CDF步长自适应调整knee_S（步长越小，knee_S越大）
+    2. 过滤起始的低累积区域（避免误判陡峭起始部分）
+    3. 使用更强的平滑参数减少噪声影响
     """
     from kneed import KneeLocator
     
@@ -1028,10 +1088,11 @@ def _find_cumulative_knee_points(
         vmiss_values = np.array(result['vmiss_values'])
         cumulative_pct = np.array(result['cumulative_percentage'])
         total = result['total_variants']
+        cdf_step = result.get('cdf_step', 0.01)
         
         logger.info(f"  CDF数据范围: VMISS [{vmiss_values[0]:.3f}, {vmiss_values[-1]:.3f}], "
                    f"累积% [{cumulative_pct[0]:.1f}%, {cumulative_pct[-1]:.1f}%], "
-                   f"{len(vmiss_values)} 个数据点")
+                   f"{len(vmiss_values)} 个数据点, CDF步长={cdf_step}")
         
         # 检查数据点是否足够
         if len(vmiss_values) < 3:
@@ -1042,13 +1103,51 @@ def _find_cumulative_knee_points(
             }
             continue
         
+        # 自适应调整knee_S：CDF步长越小，需要更高的knee_S来避免噪声
+        adaptive_knee_S = knee_S
+        if cdf_step <= 0.001:
+            # 超高精度：大幅增加knee_S
+            adaptive_knee_S = knee_S * 3.0
+            logger.info(f"  检测到超高精度CDF（步长={cdf_step}），自适应增加knee_S: {knee_S} → {adaptive_knee_S}")
+        elif cdf_step <= 0.005:
+            # 高精度：适度增加knee_S
+            adaptive_knee_S = knee_S * 2.0
+            logger.info(f"  检测到高精度CDF（步长={cdf_step}），自适应增加knee_S: {knee_S} → {adaptive_knee_S}")
+        
+        # 策略1：过滤起始的低累积区域，避免误判陡峭起始
+        # 只保留累积百分比>=5%的数据点进行拐点检测
+        min_cumulative_threshold = 5.0  # 最小累积百分比阈值
+        valid_mask = cumulative_pct >= min_cumulative_threshold
+        
+        if valid_mask.sum() < 3:
+            # 如果过滤后数据点不足，降低阈值重试
+            min_cumulative_threshold = 1.0
+            valid_mask = cumulative_pct >= min_cumulative_threshold
+            logger.info(f"  降低累积阈值至{min_cumulative_threshold}%以保留足够数据点")
+        
+        if valid_mask.sum() < 3:
+            logger.warning(f"  组 [{group_key}] 过滤后数据点仍不足，跳过拐点检测")
+            knee_results[group_key] = {
+                'knee_found': False,
+                'message': f'过滤后数据点不足（累积<{min_cumulative_threshold}%）'
+            }
+            continue
+        
+        # 使用过滤后的数据
+        vmiss_filtered = vmiss_values[valid_mask]
+        cumulative_pct_filtered = cumulative_pct[valid_mask]
+        
+        logger.info(f"  过滤后数据: {len(vmiss_filtered)} 个点 "
+                   f"(VMISS范围 [{vmiss_filtered[0]:.3f}, {vmiss_filtered[-1]:.3f}], "
+                   f"累积范围 [{cumulative_pct_filtered[0]:.1f}%, {cumulative_pct_filtered[-1]:.1f}%])")
+        
         try:
-            # 在累积分布曲线上寻找拐点
-            # curve='concave' + direction='increasing' 适合S形累积曲线
+            # 在过滤后的累积分布曲线上寻找拐点
+            # 使用自适应的knee_S参数
             kneedle = KneeLocator(
-                vmiss_values,
-                cumulative_pct,
-                S=knee_S,
+                vmiss_filtered,
+                cumulative_pct_filtered,
+                S=adaptive_knee_S,
                 curve=knee_curve,
                 direction=knee_direction,
                 weight_x=knee_weight_x,
@@ -1057,6 +1156,7 @@ def _find_cumulative_knee_points(
             
             if kneedle.knee is not None:
                 knee_vmiss = kneedle.knee
+                # 在原始（未过滤）数据中找到对应的索引
                 knee_index = np.argmin(np.abs(vmiss_values - knee_vmiss))
                 knee_cumulative_pct = float(cumulative_pct[knee_index])
                 knee_cumulative_count = int(result['cumulative_counts'][knee_index])
@@ -1068,11 +1168,14 @@ def _find_cumulative_knee_points(
                     'knee_cumulative_count': knee_cumulative_count,  # 累积变体数
                     'total_variants': total,
                     'vmiss_col': result['vmiss_col'],
-                    'maf_group': result['maf_group']
+                    'maf_group': result['maf_group'],
+                    'adaptive_knee_S': adaptive_knee_S,  # 记录使用的knee_S
+                    'min_cumulative_filter': min_cumulative_threshold  # 记录过滤阈值
                 }
                 
-                logger.info(f"  ✓ 找到拐点: VMISS={knee_vmiss:.3f}, "
-                           f"累积{knee_cumulative_pct:.1f}% ({knee_cumulative_count:,}变体)")
+                logger.info(f"  ✓ 找到拐点: VMISS={knee_vmiss:.4f}, "
+                           f"累积{knee_cumulative_pct:.1f}% ({knee_cumulative_count:,}变体), "
+                           f"使用knee_S={adaptive_knee_S:.1f}")
             else:
                 logger.warning(f"  未找到明显拐点")
                 knee_results[group_key] = {
@@ -1100,12 +1203,15 @@ def _plot_vmiss_distributions(
     """
     绘制VMISS分布图和累积分布曲线
     每个子图包含:
-    - 左Y轴: 直方图（VMISS分布）
-    - 右Y轴: 累积分布曲线
+    - 左Y轴: 直方图（VMISS分布）- 始终使用hist_step=0.01宽度显示
+    - 右Y轴: 累积分布曲线 - 使用cdf_step精度计算
     - 标记拐点位置
     """
     import matplotlib.pyplot as plt
     from matplotlib import rcParams
+    
+    # 清空当前所有图形，避免内存泄漏
+    plt.close('all')
     
     # 设置字体
     rcParams['font.sans-serif'] = ['Arial', 'DejaVu Sans']
@@ -1139,17 +1245,59 @@ def _plot_vmiss_distributions(
         ax1 = axes[idx]
         
         # 转换为numpy数组以确保正确绘图
-        vmiss_values = np.array(result['vmiss_values'])  # bin centers
-        histogram = np.array(result['histogram'])
+        vmiss_values = np.array(result['vmiss_values'])  # CDF的x轴坐标（cdf_step精度）
+        histogram = np.array(result['histogram'])  # 直方图计数（cdf_step精度）
         cumulative_pct = np.array(result['cumulative_percentage'])
         total = result['total_variants']
         
-        # 直接使用存储的bin宽度（来自vmiss_step）
-        bin_width = result.get('bin_width', 0.01)  # 使用实际的bin_width
+        # 使用存储的步长参数
+        hist_step = result.get('hist_step', 0.01)  # 直方图步长（固定0.01，用于显示）
+        cdf_step = result.get('cdf_step', 0.001)   # CDF步长（用于计算精度）
+        
+        # 关键修正：如果cdf_step != hist_step，需要重新聚合histogram数据
+        # 这样才能保证所有模式的直方图视觉一致
+        if abs(cdf_step - hist_step) > 1e-6:
+            # cdf_step更细，需要按hist_step重新聚合
+            vmiss_min = vmiss_values[0]
+            vmiss_max = vmiss_values[-1]
+            
+            # 生成hist_step的bin边界
+            hist_bins = np.arange(
+                np.floor(vmiss_min / hist_step) * hist_step,
+                np.ceil(vmiss_max / hist_step) * hist_step + hist_step/2,
+                hist_step
+            )
+            
+            # 将细粒度的histogram聚合到粗粒度
+            hist_aggregated = []
+            hist_x_values = []
+            
+            for i in range(len(hist_bins) - 1):
+                bin_left = hist_bins[i]
+                bin_right = hist_bins[i + 1]
+                
+                # 找到落在这个bin范围内的所有cdf数据点
+                mask = (vmiss_values >= bin_left) & (vmiss_values < bin_right)
+                bin_count = histogram[mask].sum()
+                
+                hist_aggregated.append(bin_count)
+                hist_x_values.append(bin_left)
+            
+            # 使用聚合后的数据绘制
+            hist_x_values = np.array(hist_x_values)
+            hist_aggregated = np.array(hist_aggregated)
+            
+            logger.info(f"  [{group_key}] 重新聚合直方图: "
+                       f"{len(histogram)}个点(步长{cdf_step}) → {len(hist_aggregated)}个点(步长{hist_step})")
+        else:
+            # cdf_step == hist_step，直接使用原始数据
+            hist_x_values = vmiss_values
+            hist_aggregated = histogram
         
         # 左Y轴: 绘制直方图（分布）
+        # 现在histogram数据和bar宽度都基于hist_step，视觉完全一致
         color_hist = 'tab:blue'
-        ax1.bar(vmiss_values, histogram, width=bin_width * 0.8,
+        ax1.bar(hist_x_values, hist_aggregated, width=hist_step * 0.8,
                color=color_hist, alpha=0.6, label='Distribution')
         ax1.set_xlabel('VMISS', fontsize=12)
         ax1.set_ylabel('Variant Count', fontsize=12, color=color_hist)
@@ -1217,7 +1365,10 @@ def _plot_vmiss_distributions(
     plot_filename = f'vmiss_distribution_analysis_mode{analysis_mode}.png'
     plot_path = os.path.join(output_dir, plot_filename)
     plt.savefig(plot_path, dpi=dpi, bbox_inches='tight')
-    plt.close()
+    
+    # 关闭图形对象，释放内存
+    plt.close(fig)
+    plt.close('all')
     
     logger.info(f"分布分析图已保存: {plot_path}")
     return plot_path

@@ -1,0 +1,85 @@
+{
+  "analysis_mode": 3,
+  "maf_thresholds": [
+    0.01,
+    0.05
+  ],
+  "hist_step": 0.01,
+  "cdf_step_dict": {
+    "default": 0.001
+  },
+  "bin_position": "right",
+  "knee_parameters": {
+    "curve": "concave",
+    "direction": "increasing",
+    "S": 2.0,
+    "weight_x": 8.0,
+    "weight_y": 1.0
+  },
+  "group_statistics": {
+    "MAF<0.01_VMISS": {
+      "total_variants": 30875601,
+      "vmiss_col": "VMISS",
+      "maf_group": "MAF<0.01",
+      "vmiss_min": 0.0,
+      "vmiss_max": 0.9993370175361633,
+      "vmiss_mean": 0.04830286279320717,
+      "vmiss_median": 0.02618500031530857
+    },
+    "MAF>=0.01&<=0.05_VMISS": {
+      "total_variants": 2516905,
+      "vmiss_col": "VMISS",
+      "maf_group": "MAF>=0.01&<=0.05",
+      "vmiss_min": 0.0016572800232097507,
+      "vmiss_max": 0.9963539838790894,
+      "vmiss_mean": 0.13440187275409698,
+      "vmiss_median": 0.030825300142169
+    },
+    "MAF>0.05_VMISS": {
+      "total_variants": 5828525,
+      "vmiss_col": "VMISS",
+      "maf_group": "MAF>0.05",
+      "vmiss_min": 0.00033145499764941633,
+      "vmiss_max": 0.9990059733390808,
+      "vmiss_mean": 0.09573233872652054,
+      "vmiss_median": 0.03115680068731308
+    }
+  },
+  "knee_points": {
+    "MAF<0.01_VMISS": {
+      "knee_found": true,
+      "knee_vmiss": 0.042,
+      "knee_cumulative_percentage": 82.33965389046192,
+      "knee_cumulative_count": 25422863,
+      "total_variants": 30875601,
+      "vmiss_col": "VMISS",
+      "maf_group": "MAF<0.01",
+      "adaptive_knee_S": 6.0,
+      "min_cumulative_filter": 5.0
+    },
+    "MAF>=0.01&<=0.05_VMISS": {
+      "knee_found": true,
+      "knee_vmiss": 0.041,
+      "knee_cumulative_percentage": 63.72532932311709,
+      "knee_cumulative_count": 1603906,
+      "total_variants": 2516905,
+      "vmiss_col": "VMISS",
+      "maf_group": "MAF>=0.01&<=0.05",
+      "adaptive_knee_S": 6.0,
+      "min_cumulative_filter": 5.0
+    },
+    "MAF>0.05_VMISS": {
+      "knee_found": true,
+      "knee_vmiss": 0.045,
+      "knee_cumulative_percentage": 73.68394233532497,
+      "knee_cumulative_count": 4294687,
+      "total_variants": 5828525,
+      "vmiss_col": "VMISS",
+      "maf_group": "MAF>0.05",
+      "adaptive_knee_S": 6.0,
+      "min_cumulative_filter": 5.0
+    }
+  },
+  "plot_path": "./vmiss_analysis_mode3/vmiss_distribution_analysis_mode3.png",
+  "json_path": "./vmiss_analysis_mode3/vmiss_threshold_analysis.json"
+}

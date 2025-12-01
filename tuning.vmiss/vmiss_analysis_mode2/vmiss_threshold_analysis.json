@@ -1,0 +1,66 @@
+{
+  "analysis_mode": 2,
+  "maf_thresholds": [
+    0.01,
+    0.05
+  ],
+  "hist_step": 0.01,
+  "cdf_step_dict": {
+    "15X": 0.001,
+    "30X": 0.01
+  },
+  "bin_position": "right",
+  "knee_parameters": {
+    "curve": "concave",
+    "direction": "increasing",
+    "S": 2.0,
+    "weight_x": 8.0,
+    "weight_y": 1.0
+  },
+  "group_statistics": {
+    "VMISS_15X": {
+      "total_variants": 39221031,
+      "vmiss_col": "VMISS_15X",
+      "maf_group": "All",
+      "vmiss_min": 0.0,
+      "vmiss_max": 0.9996259808540344,
+      "vmiss_mean": 0.06260062009096146,
+      "vmiss_median": 0.028058400377631187
+    },
+    "VMISS_30X": {
+      "total_variants": 39221031,
+      "vmiss_col": "VMISS_30X",
+      "maf_group": "All",
+      "vmiss_min": 0.0,
+      "vmiss_max": 1.0,
+      "vmiss_mean": 0.04747817665338516,
+      "vmiss_median": 0.017441900447010994
+    }
+  },
+  "knee_points": {
+    "VMISS_15X": {
+      "knee_found": true,
+      "knee_vmiss": 0.045,
+      "knee_cumulative_percentage": 80.4972643375948,
+      "knee_cumulative_count": 31571857,
+      "total_variants": 39221031,
+      "vmiss_col": "VMISS_15X",
+      "maf_group": "All",
+      "adaptive_knee_S": 6.0,
+      "min_cumulative_filter": 5.0
+    },
+    "VMISS_30X": {
+      "knee_found": true,
+      "knee_vmiss": 0.04,
+      "knee_cumulative_percentage": 81.54557946220231,
+      "knee_cumulative_count": 31983017,
+      "total_variants": 39221031,
+      "vmiss_col": "VMISS_30X",
+      "maf_group": "All",
+      "adaptive_knee_S": 2.0,
+      "min_cumulative_filter": 5.0
+    }
+  },
+  "plot_path": "./vmiss_analysis_mode2/vmiss_distribution_analysis_mode2.png",
+  "json_path": "./vmiss_analysis_mode2/vmiss_threshold_analysis.json"
+}
