@@ -12,7 +12,7 @@
   "knee_parameters": {
     "curve": "concave",
     "direction": "increasing",
-    "S": 2.0,
+    "S": 1.0,
     "weight_x": 8.0,
     "weight_y": 1.0
   },
@@ -54,7 +54,7 @@
       "total_variants": 30875601,
       "vmiss_col": "VMISS",
       "maf_group": "MAF<0.01",
-      "adaptive_knee_S": 6.0,
+      "adaptive_knee_S": 3.0,
       "min_cumulative_filter": 5.0
     },
     "MAF>=0.01&<=0.05_VMISS": {
@@ -65,7 +65,7 @@
       "total_variants": 2516905,
       "vmiss_col": "VMISS",
       "maf_group": "MAF>=0.01&<=0.05",
-      "adaptive_knee_S": 6.0,
+      "adaptive_knee_S": 3.0,
       "min_cumulative_filter": 5.0
     },
     "MAF>0.05_VMISS": {
@@ -76,7 +76,7 @@
       "total_variants": 5828525,
       "vmiss_col": "VMISS",
       "maf_group": "MAF>0.05",
-      "adaptive_knee_S": 6.0,
+      "adaptive_knee_S": 3.0,
       "min_cumulative_filter": 5.0
     }
   },
