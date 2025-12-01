@@ -1,5 +1,5 @@
 {
-  "rare":    ["Stat_1"],
-  "lowfreq": ["Stat_1"],
-  "common":  ["Stat_1"]
+  "rare":    ["Stat_1", "Stat_2", "Stat_3", "Stat_4"],
+  "lowfreq": ["Stat_1", "Stat_2", "Stat_3", "Stat_4"],
+  "common":  ["Stat_1", "Stat_2", "Stat_3", "Stat_4"]
 }
