@@ -578,20 +578,30 @@ def process_single_lead_variant_with_eas(lead_variant, lead_data, output_dir, ea
                         plink2_path = "/home/b/b37974/plink2"
                         plink19_path = "/home/b/b37974/plink"
                         
-                        # 步骤1: 使用plink2提取变体子集
+                        # 从lead variant中提取染色体号
+                        chr_num = lead_variant.split(':')[0].replace('chr', '')
+                        logger.info(f"从lead variant提取染色体号: {chr_num}")
+                        
+                        # 步骤1: 使用plink2提取变体子集，添加染色体过滤以减少内存使用
                         extract_cmd = [
                             plink2_path,
                             "--bfile", eas_bed_prefix,
+                            "--chr", chr_num,  # 只读取特定染色体，大大减少内存使用
                             "--extract", intersect_file,
                             "--make-bed",
-                            "--out", subset_prefix
+                            "--out", subset_prefix,
+                            "--threads", "4",  # 减少线程数降低内存占用
+                            "--memory", "16000"  # 限制内存使用为16GB
                         ]
                         
                         logger.info("使用plink2提取变体子集...")
+                        logger.info(f"执行命令: {' '.join(extract_cmd)}")
                         result = subprocess.run(extract_cmd, capture_output=True, text=True)
                         
                         if result.returncode != 0:
-                            logger.error(f"plink2提取变体失败: {result.stderr}")
+                            logger.error(f"plink2提取变体失败 (返回码: {result.returncode})")
+                            logger.error(f"STDERR: {result.stderr}")
+                            logger.error(f"STDOUT: {result.stdout}")
                         elif not os.path.exists(f"{subset_prefix}.bed"):
                             logger.error(f"子集bed文件未生成: {subset_prefix}.bed")
                         else:

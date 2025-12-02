@@ -21,11 +21,11 @@ library(rtracklayer)          # 基因组数据格式导入
 # 配置参数
 # ------------------------------------------------------------------------------
 # 输入文件路径
-sum_path <- '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/06.regional_plot_rev1/ld_summary/chr3_154069965_A_G.merged_ld_sum_stat.tsv'
+sum_path <- '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/06.regional_plot_rev1/eas_ld/chr17_13528059_G_A.eas_ld_sum_stat.tsv'
 
 # LD 数据源选择
 # 可选项: "ld_r2_with_lead" (AGP3K), "tommo_r2_with_lead" (ToMMo), "eas_r2_with_lead" (1000G-EAS)
-ld_column <- "tommo_r2_with_lead"
+ld_column <- "eas_r2_with_lead"
 
 # 重组率文件 (hg38)
 recomb_file <- "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/06.regional_plot_rev1/info/recomb1000GAvg.bw"
@@ -34,10 +34,10 @@ recomb_file <- "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review
 output_dir <- "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/06.regional_plot_rev1/result_vis"
 
 # 目标基因
-target_gene <- "ARHGEF26-AS1"
+target_gene <- "HS3ST3A1"
 
 # 目标 SNP
-target_snp <- c("chr3:154069965:A:G")
+target_snp <- c("chr17:13528059:G:A")
 
 # 图形参数设置
 plot_width <- 8         # 图形宽度（英寸）

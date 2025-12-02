@@ -4,7 +4,7 @@
 #SBATCH --error=eas_variant_intersect_%j.err
 #SBATCH -p gr10478b
 #SBATCH -t 168:0:0
-#SBATCH --rsc p=1:t=64:c=32:m=146272M
+#SBATCH --rsc p=1:t=16:c=8:m=36568M
 
 # Script to find variant intersections between EAS bed/bim files and lead variant summary stats
 # 为每个lead variant计算与EAS数据的交集，生成变体ID列表

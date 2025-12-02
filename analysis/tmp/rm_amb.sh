@@ -7,9 +7,9 @@
 PLINK2="/home/b/b37974/plink2"
 
 # Define input/output paths
-BFILE="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/19.tommo_panel_filter/cteph_agp3k.lowfreq_common"
-COVAR="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/20.cov_pheno_prepare/cteph_agp3k.bbj.projection.cov_df.no_age.csv"
-PHENO="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/20.cov_pheno_prepare/cteph_agp3k.bbj.projection.pheno_df.csv"
+BFILE="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/18.tommo_panel_filter/cteph_agp3k.lowfreq_common"
+COVAR="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/19.cov_pheno_prepare/cteph_agp3k.bbj.projection.cov_df.no_age.csv"
+PHENO="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/19.cov_pheno_prepare/cteph_agp3k.bbj.projection.pheno_df.csv"
 OUTPUT_PREFIX="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/analysis/tmp/cteph_agp3k_rm_amb"
 
 # Create a file with samples to remove

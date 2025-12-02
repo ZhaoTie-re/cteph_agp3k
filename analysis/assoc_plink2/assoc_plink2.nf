@@ -28,10 +28,10 @@ process AssocPlink2Model {
           into assoc_plink2_out1, assoc_plink2_out2, assoc_plink2_out3
 
     script:
-    BED_FILE_PR = "${gtPath}/19.tommo_panel_filter/cteph_agp3k.lowfreq_common"
-    PHENO_FILE = "${gtPath}/20.cov_pheno_prepare/cteph_agp3k.bbj.projection.pheno_df.csv"
+    BED_FILE_PR = "${gtPath}/18.tommo_panel_filter/cteph_agp3k.lowfreq_common"
+    PHENO_FILE = "${gtPath}/19.cov_pheno_prepare/cteph_agp3k.bbj.projection.pheno_df.csv"
     PHENO_NAME = "PHENO1"
-    COVAR_FILE = "${gtPath}/20.cov_pheno_prepare/cteph_agp3k.bbj.projection.cov_df.no_age.csv"
+    COVAR_FILE = "${gtPath}/19.cov_pheno_prepare/cteph_agp3k.bbj.projection.cov_df.no_age.csv"
     COVAR_NAME = "SEX, PC1_AVG-PC10_AVG"
     OUT_PR = "cteph_agp3k.sex.10pc.${model}"
 
@@ -72,7 +72,7 @@ process AssocPlink2Summary {
     file("*.csv")
 
     script:
-    BED_FILE_PR = "${gtPath}/19.tommo_panel_filter/cteph_agp3k.lowfreq_common"
+    BED_FILE_PR = "${gtPath}/18.tommo_panel_filter/cteph_agp3k.lowfreq_common"
     TOMMO_VCF = "${tommoPath}/tommo-60kjpn-20240904-GRCh38-snvindel-af-autosome.norm.vcf.gz"
     TOMMO_VCF_TBI = "${tommoPath}/tommo-60kjpn-20240904-GRCh38-snvindel-af-autosome.norm.vcf.gz.tbi"
     """
@@ -114,10 +114,10 @@ process AssocPlink2Model_SNP {
           into assoc_plink2_out1_snp, assoc_plink2_out2_snp, assoc_plink2_out3_snp
 
     script:
-    BED_FILE_PR = "${gtPath}/19.tommo_panel_filter/cteph_agp3k.lowfreq_common"
-    PHENO_FILE = "${gtPath}/20.cov_pheno_prepare/cteph_agp3k.bbj.projection.pheno_df.csv"
+    BED_FILE_PR = "${gtPath}/18.tommo_panel_filter/cteph_agp3k.lowfreq_common"
+    PHENO_FILE = "${gtPath}/19.cov_pheno_prepare/cteph_agp3k.bbj.projection.pheno_df.csv"
     PHENO_NAME = "PHENO1"
-    COVAR_FILE = "${gtPath}/20.cov_pheno_prepare/cteph_agp3k.bbj.projection.cov_df.no_age.csv"
+    COVAR_FILE = "${gtPath}/19.cov_pheno_prepare/cteph_agp3k.bbj.projection.cov_df.no_age.csv"
     COVAR_NAME = "SEX, PC1_AVG-PC10_AVG"
     OUT_PR = "cteph_agp3k.sex.10pc.snp_only.${model}"
 
@@ -159,7 +159,7 @@ process AssocPlink2Summary_SNP {
     file("*.csv")
 
     script:
-    BED_FILE_PR = "${gtPath}/19.tommo_panel_filter/cteph_agp3k.lowfreq_common"
+    BED_FILE_PR = "${gtPath}/18.tommo_panel_filter/cteph_agp3k.lowfreq_common"
     TOMMO_VCF = "${tommoPath}/tommo-60kjpn-20240904-GRCh38-snvindel-af-autosome.norm.vcf.gz"
     TOMMO_VCF_TBI = "${tommoPath}/tommo-60kjpn-20240904-GRCh38-snvindel-af-autosome.norm.vcf.gz.tbi"
     """
