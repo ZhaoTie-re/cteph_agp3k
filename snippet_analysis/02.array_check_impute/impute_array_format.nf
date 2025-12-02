@@ -143,7 +143,7 @@ process extractCommonVariantsAndSamples {
     tuple file('cteph_agp3k.wgs.common.bed'), file('cteph_agp3k.wgs.common.bim'), file('cteph_agp3k.wgs.common.fam') into wgs_common_out
 
     script:
-    wgs_prefix = "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/19.tommo_panel_filter/cteph_agp3k.lowfreq_common"
+    wgs_prefix = "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/18.tommo_panel_filter/cteph_agp3k.lowfreq_common"
     case_prefix = "PHOM"
     log_file = "extract_common_variants_samples.log"
     
@@ -273,9 +273,9 @@ process AssocPlink2ArrayModel {
     tuple val("additive"), file("*.glm.logistic") into array_assoc_out
 
     script:
-    PHENO_FILE = "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/20.cov_pheno_prepare/cteph_agp3k.bbj.projection.pheno_df.csv"
+    PHENO_FILE = "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/19.cov_pheno_prepare/cteph_agp3k.bbj.projection.pheno_df.csv"
     PHENO_NAME = "PHENO1"
-    COVAR_FILE = "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/20.cov_pheno_prepare/cteph_agp3k.bbj.projection.cov_df.no_age.csv"
+    COVAR_FILE = "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/19.cov_pheno_prepare/cteph_agp3k.bbj.projection.cov_df.no_age.csv"
     COVAR_NAME = "SEX, PC1_AVG-PC10_AVG"
     OUT_PR = "cteph_agp3k.array.sex.10pc.additive"
 
