@@ -18,22 +18,22 @@
   },
   "group_statistics": {
     "VMISS": {
-      "total_variants": 39221031,
+      "total_variants": 39218484,
       "vmiss_col": "VMISS",
       "maf_group": "All",
       "vmiss_min": 0.0,
       "vmiss_max": 0.9993370175361633,
-      "vmiss_mean": 0.060876473784446716,
-      "vmiss_median": 0.026847900822758675
+      "vmiss_mean": 0.06087922677397728,
+      "vmiss_median": 0.0268568005412817
     }
   },
   "knee_points": {
     "VMISS": {
       "knee_found": true,
       "knee_vmiss": 0.04,
-      "knee_cumulative_percentage": 77.72359681212868,
-      "knee_cumulative_count": 30483996,
-      "total_variants": 39221031,
+      "knee_cumulative_percentage": 77.73620469368474,
+      "knee_cumulative_count": 30486961,
+      "total_variants": 39218484,
       "vmiss_col": "VMISS",
       "maf_group": "All",
       "adaptive_knee_S": 1.0,

@@ -19,31 +19,31 @@
   },
   "group_statistics": {
     "VMISS_15X": {
-      "total_variants": 39221031,
+      "total_variants": 39218484,
       "vmiss_col": "VMISS_15X",
       "maf_group": "All",
       "vmiss_min": 0.0,
       "vmiss_max": 0.9996259808540344,
-      "vmiss_mean": 0.06260062009096146,
+      "vmiss_mean": 0.06259877979755402,
       "vmiss_median": 0.028058400377631187
     },
     "VMISS_30X": {
-      "total_variants": 39221031,
+      "total_variants": 39218484,
       "vmiss_col": "VMISS_30X",
       "maf_group": "All",
       "vmiss_min": 0.0,
       "vmiss_max": 1.0,
-      "vmiss_mean": 0.04747817665338516,
-      "vmiss_median": 0.017441900447010994
+      "vmiss_mean": 0.04747861996293068,
+      "vmiss_median": 0.01749270036816597
     }
   },
   "knee_points": {
     "VMISS_15X": {
       "knee_found": true,
       "knee_vmiss": 0.04,
-      "knee_cumulative_percentage": 75.84170849562828,
-      "knee_cumulative_count": 29745900,
-      "total_variants": 39221031,
+      "knee_cumulative_percentage": 75.84649625926387,
+      "knee_cumulative_count": 29745846,
+      "total_variants": 39218484,
       "vmiss_col": "VMISS_15X",
       "maf_group": "All",
       "adaptive_knee_S": 1.0,
@@ -52,9 +52,9 @@
     "VMISS_30X": {
       "knee_found": true,
       "knee_vmiss": 0.03,
-      "knee_cumulative_percentage": 74.7230918024567,
-      "knee_cumulative_count": 29307167,
-      "total_variants": 39221031,
+      "knee_cumulative_percentage": 74.80929910498325,
+      "knee_cumulative_count": 29339073,
+      "total_variants": 39218484,
       "vmiss_col": "VMISS_30X",
       "maf_group": "All",
       "adaptive_knee_S": 1.0,

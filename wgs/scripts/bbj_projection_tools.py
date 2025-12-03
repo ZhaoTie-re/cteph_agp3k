@@ -1022,7 +1022,14 @@ def plot_projection_pc1_pc2_and_select(
 
     ax_main.set_xlabel("PC1_AVG", fontsize=14)
     ax_main.set_ylabel("PC2_AVG", fontsize=14)
-    ax_main.grid(True, linestyle="--", linewidth=0.5, alpha=0.3)
+    
+    # 更清晰的网格线
+    ax_main.grid(True, linestyle="--", linewidth=0.8, alpha=0.6, color="gray")
+    
+    # 添加刻度线（底部和左侧）
+    ax_main.tick_params(axis='both', which='major', direction='out', length=6, width=1.5, 
+                        bottom=True, left=True, top=False, right=False, 
+                        labelsize=12, labelbottom=True, labelleft=True)
 
     # 图例（右上角）
     legend_elements = [
