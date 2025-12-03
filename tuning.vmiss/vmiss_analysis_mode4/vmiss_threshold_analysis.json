@@ -6,7 +6,7 @@
   ],
   "hist_step": 0.01,
   "cdf_step_dict": {
-    "15X": 0.001,
+    "15X": 0.01,
     "30X": 0.01
   },
   "bin_position": "right",
@@ -76,13 +76,13 @@
   "knee_points": {
     "MAF<0.01_VMISS_15X": {
       "knee_found": true,
-      "knee_vmiss": 0.042,
-      "knee_cumulative_percentage": 81.0627297586855,
-      "knee_cumulative_count": 25028605,
+      "knee_vmiss": 0.04,
+      "knee_cumulative_percentage": 78.8752290198335,
+      "knee_cumulative_count": 24353201,
       "total_variants": 30875601,
       "vmiss_col": "VMISS_15X",
       "maf_group": "MAF<0.01",
-      "adaptive_knee_S": 3.0,
+      "adaptive_knee_S": 1.0,
       "min_cumulative_filter": 5.0
     },
     "MAF<0.01_VMISS_30X": {
@@ -98,13 +98,13 @@
     },
     "MAF>=0.01&<=0.05_VMISS_15X": {
       "knee_found": true,
-      "knee_vmiss": 0.041,
-      "knee_cumulative_percentage": 62.467633859839765,
-      "knee_cumulative_count": 1572251,
+      "knee_vmiss": 0.04,
+      "knee_cumulative_percentage": 61.465053309521025,
+      "knee_cumulative_count": 1547017,
       "total_variants": 2516905,
       "vmiss_col": "VMISS_15X",
       "maf_group": "MAF>=0.01&<=0.05",
-      "adaptive_knee_S": 3.0,
+      "adaptive_knee_S": 1.0,
       "min_cumulative_filter": 5.0
     },
     "MAF>=0.01&<=0.05_VMISS_30X": {
@@ -120,13 +120,13 @@
     },
     "MAF>0.05_VMISS_15X": {
       "knee_found": true,
-      "knee_vmiss": 0.045,
-      "knee_cumulative_percentage": 72.12437108874029,
-      "knee_cumulative_count": 4203787,
+      "knee_vmiss": 0.05,
+      "knee_cumulative_percentage": 75.57277355763252,
+      "knee_cumulative_count": 4404778,
       "total_variants": 5828525,
       "vmiss_col": "VMISS_15X",
       "maf_group": "MAF>0.05",
-      "adaptive_knee_S": 3.0,
+      "adaptive_knee_S": 1.0,
       "min_cumulative_filter": 5.0
     },
     "MAF>0.05_VMISS_30X": {
