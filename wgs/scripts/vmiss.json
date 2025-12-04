@@ -4,16 +4,16 @@
   },
   "dp": {
     "Rare Variant (<0.01)": {
-      "15X_VMISS": 0.042,
-      "30X_VMISS": 0.030
+      "15X_VMISS": 0.04,
+      "30X_VMISS": 0.03
     },
     "Low Frequency Variant (0.01~0.05)": {
-      "15X_VMISS": 0.041,
-      "30X_VMISS": 0.030
+      "15X_VMISS": 0.04,
+      "30X_VMISS": 0.03
     },
     "Common Variant (>0.05)": {
-      "15X_VMISS": 0.045,
-      "30X_VMISS": 0.030
+      "15X_VMISS": 0.04,
+      "30X_VMISS": 0.03
     }
   },
   "case_ctrl": {

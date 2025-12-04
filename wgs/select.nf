@@ -681,130 +681,130 @@ process RunVariantQC_rev {
     """
 }
 
-// process ToMMoPanelCompare_rev {
-//     executor 'slurm'
-//     queue 'gr10478b'
-//     time '36h'
-//     tag "ToMMoPanelCompare"
+process ToMMoPanelCompare_rev {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '36h'
+    tag "ToMMoPanelCompare"
 
-//     publishDir "${params.outdir}/16.tommo_panel_compare", mode: 'symlink'
+    publishDir "${params.outdir}/16.tommo_panel_compare", mode: 'symlink'
 
-//     input:
-//     tuple file(bed), file(bim), file(fam) from variant_qc_out
-//     val(tommodir) from params.tommodir
+    input:
+    tuple file(bed), file(bim), file(fam) from variant_qc_out
+    val(tommodir) from params.tommodir
 
-//     output:
-//     file('*.pdf')
-//     file('*.variant_qc_summary.variant_qc_with_tommo.tsv') into tommo_panel_compare_out
+    output:
+    file('*.pdf')
+    file('*.variant_qc_summary.variant_qc_with_tommo.tsv') into tommo_panel_compare_out
 
-//     script:
-//     bed_prefix = bed.baseName
-//     tommo_vcf_path = "${tommodir}/tommo-60kjpn-20240904-GRCh38-snvindel-af-autosome.norm.vcf.gz"
-//     """
-//     source activate cteph_geno_pro
-//     python ${params.scriptDir}/panel_compare_main.py \
-//         --bed_prefix ${bed_prefix} \
-//         --tommo_vcf_path ${tommo_vcf_path} \
-//         --threads 6 \
-//         --chunk_size 500000 \
-//         --max_workers 10 \
-//         --output_prefix cteph_agp3k \
-//         --regions_chunk_lines 500000
-//     """
-// }
+    script:
+    bed_prefix = bed.baseName
+    tommo_vcf_path = "${tommodir}/tommo-60kjpn-20240904-GRCh38-snvindel-af-autosome.norm.vcf.gz"
+    """
+    source activate cteph_geno_pro
+    python ${params.scriptDir}/panel_compare_main.py \
+        --bed_prefix ${bed_prefix} \
+        --tommo_vcf_path ${tommo_vcf_path} \
+        --threads 16 \
+        --chunk_size 500000 \
+        --max_workers 10 \
+        --output_prefix cteph_agp3k \
+        --regions_chunk_lines 500000
+    """
+}
 
-// process ToMMoPanelThr_rev {
-//     executor 'slurm'
-//     queue 'gr10478b'
-//     time '36h'
-//     tag "ToMMoPanelThr"
+process ToMMoPanelThr_rev {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '36h'
+    tag "ToMMoPanelThr"
 
-//     publishDir "${params.outdir}/17.tommo_panel_thr", mode: 'symlink'
+    publishDir "${params.outdir}/17.tommo_panel_thr", mode: 'symlink'
 
-//     input:
-//     file(variant_qc_with_tommo) from tommo_panel_compare_out
+    input:
+    file(variant_qc_with_tommo) from tommo_panel_compare_out
 
-//     output:
-//     file('*.pdf')
-//     file('*.tsv.gz')
-//     tuple file('knee_variants.rare.tsv'), file('knee_variants.lowfreq.tsv'), file('knee_variants.common.tsv') into tommo_panel_thr_variant_out
-//     file('manifest.json') into tommo_panel_thr_out
+    output:
+    file('*.pdf')
+    file('*.tsv.gz')
+    tuple file('knee_variants.rare.tsv'), file('knee_variants.lowfreq.tsv'), file('knee_variants.common.tsv') into tommo_panel_thr_variant_out
+    file('manifest.json') into tommo_panel_thr_out
 
-//     script:
-//     """
-//     source activate cteph_geno_pro
-//     python ${params.scriptDir}/panel_thr_main.py \
-//         --variant_qc_with_tommo ${variant_qc_with_tommo} \
-//         --chunk_size 500000 \
-//         --knee_weight_y_map '{"rare": 1.0, "lowfreq": 1.0, "common": 1.0}'
-//     """
-// }
+    script:
+    """
+    source activate cteph_geno_pro
+    python ${params.scriptDir}/panel_thr_main.py \
+        --variant_qc_with_tommo ${variant_qc_with_tommo} \
+        --chunk_size 500000 \
+        --knee_weight_y_map '{"rare": 1.0, "lowfreq": 1.0, "common": 1.0}'
+    """
+}
 
-// process ToMMoPanelFilter_rev {
-//     executor 'slurm'
-//     queue 'gr10478b'
-//     time '36h'
-//     tag "ToMMoPanelFilter"
+process ToMMoPanelFilter_rev {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '36h'
+    tag "ToMMoPanelFilter"
 
-//     publishDir "${params.outdir}/18.tommo_panel_filter", mode: 'symlink'
+    publishDir "${params.outdir}/18.tommo_panel_filter", mode: 'symlink'
 
-//     input:
-//     file(manifest) from tommo_panel_thr_out
-//     tuple file(bed), file(bim), file(fam) from variant_qc_out_2
+    input:
+    file(manifest) from tommo_panel_thr_out
+    tuple file(bed), file(bim), file(fam) from variant_qc_out_2
 
-//     output:
-//     file('*.log')
-//     file('*.json')
-//     file('*.tsv')
-//     file('*.bed')
-//     file('*.bim')
-//     file('*.fam') into final_sample_out
-//     tuple file('*.lowfreq_common.bed'), file('*.lowfreq_common.bim'), file('*.lowfreq_common.fam') into lowfreq_common_out
+    output:
+    file('*.log')
+    file('*.json')
+    file('*.tsv')
+    file('*.bed')
+    file('*.bim')
+    file('*.fam') into final_sample_out
+    tuple file('*.lowfreq_common.bed'), file('*.lowfreq_common.bim'), file('*.lowfreq_common.fam') into lowfreq_common_out
 
-//     script:
-//     bed_prefix = bed.baseName
-//     """
-//     source activate cteph_geno_pro
-//     python ${params.scriptDir}/panel_filter_main.py \
-//         --manifest_path ${manifest} \
-//         --config_json   ${params.scriptDir}/panel_select_config.json \
-//         --bed_prefix    ${bed_prefix} \
-//         --out_prefix    cteph_agp3k \
-//         --threads 6 --chunk_size 500000 --max_workers 10 \
-//         --keep_tmp \
-//         --merge_low_common \
-//         --plink2_path /home/b/b37974/plink2 \
-//         --save_out_map
-//     """
-// }
+    script:
+    bed_prefix = bed.baseName
+    """
+    source activate cteph_geno_pro
+    python ${params.scriptDir}/panel_filter_main.py \
+        --manifest_path ${manifest} \
+        --config_json   ${params.scriptDir}/panel_select_config.json \
+        --bed_prefix    ${bed_prefix} \
+        --out_prefix    cteph_agp3k \
+        --threads 16 --chunk_size 500000 --max_workers 10 \
+        --keep_tmp \
+        --merge_low_common \
+        --plink2_path /home/b/b37974/plink2 \
+        --save_out_map
+    """
+}
 
-// sample_ch = final_sample_out.map { it[0] }
+sample_ch = final_sample_out.map { it[0] }
 
-// process CovPhenoPrepare_rev {
-//     executor 'slurm'
-//     queue 'gr10478b'
-//     time '36h'
-//     tag "CovPhenoPrepare"
+process CovPhenoPrepare_rev {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '36h'
+    tag "CovPhenoPrepare"
 
-//     publishDir "${params.outdir}/19.cov_pheno_prepare", mode: 'symlink'
+    publishDir "${params.outdir}/19.cov_pheno_prepare", mode: 'symlink'
 
-//     input:
-//     file(sample) from sample_ch
-//     val(infoPath) from params.infoPath
-//     tuple file(sscore), file(sscore_vars) from bbj_projection_out_2
+    input:
+    file(sample) from sample_ch
+    val(infoPath) from params.infoPath
+    tuple file(sscore), file(sscore_vars) from bbj_projection_out_2
 
-//     output:
-//     file('*.missing_age_samples.csv')
-//     tuple file('*.pheno_df.csv'), file('*.cov_df.csv'), file('*.cov_df.no_age.csv') into cov_pheno_out
+    output:
+    file('*.missing_age_samples.csv')
+    tuple file('*.pheno_df.csv'), file('*.cov_df.csv'), file('*.cov_df.no_age.csv') into cov_pheno_out
 
-//     script:
-//     info_df = "${infoPath}/cteph_agp3k_jhrpv4.xlsx"
-//     """
-//     source activate cteph_geno_pro
-//     python ${params.scriptDir}/cov_pheno_prepare_rev1.py \
-//         --info_path ${info_df} \
-//         --fam_path ${sample} \
-//         --bbj_sscore_path ${sscore} \
-//         --case_prefix PHOM 
-//     """
-// }
+    script:
+    info_df = "${infoPath}/cteph_agp3k_jhrpv4.xlsx"
+    """
+    source activate cteph_geno_pro
+    python ${params.scriptDir}/cov_pheno_prepare_rev1.py \
+        --info_path ${info_df} \
+        --fam_path ${sample} \
+        --bbj_sscore_path ${sscore} \
+        --case_prefix PHOM 
+    """
+}

@@ -1,130 +1,143 @@
-params.arrayPath = '/LARGE0/gr10478/project/pulmonary_hypertension/DATA_SOURCE/impute20251029/JSA'
+params.arrayPath = '/LARGE0/gr10478/project/Pulmonary_Hypertension/DATA_SOURCE/impute20251029/JSA'
 params.scriptPath = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/snippet_analysis/scripts'
 params.outPath = '//LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/snippet_analysis/02.array_check_impute'
 params.refGenome = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/nagasaki_pipeline/data/hs38DH.fa'
+params.arrayPrefix = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/snippet_analysis/02.array_check_impute/02.vcf_to_plink/cteph_agp3k.array'
 
+// Create channel for array bed/bim/fam files
 Channel
-    .from((1..22).collect { "chr${it}" })
-    .set { chr_ch }
-
-process normalizeAndSetId {
-    executor 'slurm'
-    queue 'gr10478b'
-    time '36h'
-    tag "${chr}"
-
-    publishDir "${params.outPath}/01.norm_setid", mode: 'symlink'
-
-    input:
-    val(chr) from chr_ch
-    val(arrayPath) from params.arrayPath
-    val(refGenome) from params.refGenome
-
-    output:
-    tuple val(chr), file(output_vcf), file(output_vcf_tbi) into norm_setid_out
-
-    script:
-    input_bcf = "${arrayPath}/impute.${chr}.imputed.bcf"
-    norm_bcf = "${chr}.norm.bcf"
-    output_vcf = "${chr}.norm.setid.vcf.gz"
-    output_vcf_tbi = "${chr}.norm.setid.vcf.gz.tbi"
-
-    """
-    # Step 1: Normalize BCF file
-    bcftools norm -m- --fasta-ref ${refGenome} -c s --threads 8 ${input_bcf} -Ob -o ${norm_bcf}
-    
-    # Step 2: Set variant IDs and convert to VCF.gz
-    bcftools annotate --set-id '%CHROM:%POS:%REF:%ALT' ${norm_bcf} -Oz -o ${output_vcf}
-    
-    # Step 3: Index the output VCF.gz file
-    bcftools index --threads 4 -t ${output_vcf}
-    """
-}
-
-process vcfToPlink {
-    executor 'slurm'
-    queue 'gr10478b'
-    time '36h'
-    tag "${chr}"
-
-    publishDir "${params.outPath}/02.vcf_to_plink", mode: 'symlink'
-
-    input:
-    tuple val(chr), file(vcf), file(vcf_tbi) from norm_setid_out
-
-    output:
-    tuple val(chr), file("${chr}.bed"), file("${chr}.bim"), file("${chr}.fam") into plink_chr_out
-
-    script:
-    """
-    # Convert VCF to PLINK format with double-id (FID = IID)
-    export PATH=/home/b/b37974/:$PATH
-    plink2 \
-        --vcf ${vcf} \
-        --make-bed \
-        --double-id \
-        --out ${chr} \
-        --threads 8
-    """
-}
-
-// Collect all chromosome files for merging
-plink_chr_out
+    .fromPath("${params.arrayPrefix}.{bed,bim,fam}")
     .toList()
-    .map { entries ->
-        def chr_order = (1..22).collect { "chr${it}" }
-        def filtered = entries.findAll { it[0] in chr_order }
-        def sorted = filtered.sort { a, b ->
-            Integer.parseInt(a[0].replace("chr", "")) <=> Integer.parseInt(b[0].replace("chr", ""))
-        }
-        def paths = sorted.collect { it[1].toString().replaceAll(/\.bed$/, '') }
-        return paths.join('\n')
+    .map { files -> 
+        def bed = files.find { it.name.endsWith('.bed') }
+        def bim = files.find { it.name.endsWith('.bim') }
+        def fam = files.find { it.name.endsWith('.fam') }
+        tuple(bed, bim, fam)
     }
-    .set { pmerge_list_content }
+    .set { array_input_ch }
 
-process writePmergeList {
-    executor 'local'
-    time '1h'
+// Channel
+//     .from((1..22).collect { "chr${it}" })
+//     .set { chr_ch }
+
+// process normalizeAndSetId {
+//     executor 'slurm'
+//     queue 'gr10478b'
+//     time '36h'
+//     tag "${chr}"
+
+//     publishDir "${params.outPath}/01.norm_setid", mode: 'symlink'
+
+//     input:
+//     val(chr) from chr_ch
+//     val(arrayPath) from params.arrayPath
+//     val(refGenome) from params.refGenome
+
+//     output:
+//     tuple val(chr), file(output_vcf), file(output_vcf_tbi) into norm_setid_out
+
+//     script:
+//     input_bcf = "${arrayPath}/impute.${chr}.imputed.bcf"
+//     norm_bcf = "${chr}.norm.bcf"
+//     output_vcf = "${chr}.norm.setid.vcf.gz"
+//     output_vcf_tbi = "${chr}.norm.setid.vcf.gz.tbi"
+
+//     """
+//     # Step 1: Normalize BCF file
+//     bcftools norm -m- --fasta-ref ${refGenome} -c s --threads 8 ${input_bcf} -Ob -o ${norm_bcf}
     
-    publishDir "${params.outPath}/02.vcf_to_plink", mode: 'copy'
+//     # Step 2: Set variant IDs and convert to VCF.gz
+//     bcftools annotate --set-id '%CHROM:%POS:%REF:%ALT' ${norm_bcf} -Oz -o ${output_vcf}
+    
+//     # Step 3: Index the output VCF.gz file
+//     bcftools index --threads 4 -t ${output_vcf}
+//     """
+// }
 
-    input:
-    val(list_text) from pmerge_list_content
+// process vcfToPlink {
+//     executor 'slurm'
+//     queue 'gr10478b'
+//     time '36h'
+//     tag "${chr}"
 
-    output:
-    file("pmerge_list.txt") into pmerge_list_ch
+//     publishDir "${params.outPath}/02.vcf_to_plink", mode: 'symlink'
 
-    script:
-    """
-    echo "${list_text}" > pmerge_list.txt
-    """
-}
+//     input:
+//     tuple val(chr), file(vcf), file(vcf_tbi) from norm_setid_out
 
-process mergePlink {
-    executor 'slurm'
-    queue 'gr10478b'
-    time '36h'
-    tag "merge_all_chr"
+//     output:
+//     tuple val(chr), file("${chr}.bed"), file("${chr}.bim"), file("${chr}.fam") into plink_chr_out
 
-    publishDir "${params.outPath}/02.vcf_to_plink", mode: 'symlink'
+//     script:
+//     """
+//     # Convert VCF to PLINK format with double-id (FID = IID)
+//     export PATH=/home/b/b37974/:$PATH
+//     plink2 \
+//         --vcf ${vcf} \
+//         --make-bed \
+//         --double-id \
+//         --out ${chr} \
+//         --threads 8
+//     """
+// }
 
-    input:
-    file(pmerge_list) from pmerge_list_ch
+// // Collect all chromosome files for merging
+// plink_chr_out
+//     .toList()
+//     .map { entries ->
+//         def chr_order = (1..22).collect { "chr${it}" }
+//         def filtered = entries.findAll { it[0] in chr_order }
+//         def sorted = filtered.sort { a, b ->
+//             Integer.parseInt(a[0].replace("chr", "")) <=> Integer.parseInt(b[0].replace("chr", ""))
+//         }
+//         def paths = sorted.collect { it[1].toString().replaceAll(/\.bed$/, '') }
+//         return paths.join('\n')
+//     }
+//     .set { pmerge_list_content }
 
-    output:
-    tuple file("cteph_agp3k.array.bed"), file("cteph_agp3k.array.bim"), file("cteph_agp3k.array.fam") into merged_plink_out
+// process writePmergeList {
+//     executor 'local'
+//     time '1h'
+    
+//     publishDir "${params.outPath}/02.vcf_to_plink", mode: 'copy'
 
-    script:
-    """
-    # Merge all chromosome PLINK files
-    export PATH=/home/b/b37974/:$PATH
-    plink2 \
-        --pmerge-list ${pmerge_list} bfile \
-        --make-bed \
-        --out cteph_agp3k.array \
-        --threads 16
-    """
-}
+//     input:
+//     val(list_text) from pmerge_list_content
+
+//     output:
+//     file("pmerge_list.txt") into pmerge_list_ch
+
+//     script:
+//     """
+//     echo "${list_text}" > pmerge_list.txt
+//     """
+// }
+
+// process mergePlink {
+//     executor 'slurm'
+//     queue 'gr10478b'
+//     time '36h'
+//     tag "merge_all_chr"
+
+//     publishDir "${params.outPath}/02.vcf_to_plink", mode: 'symlink'
+
+//     input:
+//     file(pmerge_list) from pmerge_list_ch
+
+//     output:
+//     tuple file("cteph_agp3k.array.bed"), file("cteph_agp3k.array.bim"), file("cteph_agp3k.array.fam") into merged_plink_out
+
+//     script:
+//     """
+//     # Merge all chromosome PLINK files
+//     export PATH=/home/b/b37974/:$PATH
+//     plink2 \
+//         --pmerge-list ${pmerge_list} bfile \
+//         --make-bed \
+//         --out cteph_agp3k.array \
+//         --threads 16
+//     """
+// }
 
 process extractCommonVariantsAndSamples {
     executor 'slurm'
@@ -135,7 +148,7 @@ process extractCommonVariantsAndSamples {
     publishDir "${params.outPath}/03.extract_common", mode: 'symlink'
 
     input:
-    tuple file(array_bed), file(array_bim), file(array_fam) from merged_plink_out
+    tuple file(array_bed), file(array_bim), file(array_fam) from array_input_ch
 
     output:
     file('*.log') into extract_log_out
@@ -143,6 +156,7 @@ process extractCommonVariantsAndSamples {
     tuple file('cteph_agp3k.wgs.common.bed'), file('cteph_agp3k.wgs.common.bim'), file('cteph_agp3k.wgs.common.fam') into wgs_common_out
 
     script:
+    array_prefix = array_bed.baseName
     wgs_prefix = "/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/18.tommo_panel_filter/cteph_agp3k.lowfreq_common"
     case_prefix = "PHOM"
     log_file = "extract_common_variants_samples.log"
@@ -154,7 +168,7 @@ process extractCommonVariantsAndSamples {
     # Create log file
     echo "=== Array vs WGS Common Variants and Samples Extraction ===" > ${log_file}
     echo "Date: \$(date)" >> ${log_file}
-    echo "Array input prefix: ${array_bed.baseName}" >> ${log_file}
+    echo "Array input prefix: ${array_prefix}" >> ${log_file}
     echo "WGS input prefix: ${wgs_prefix}" >> ${log_file}
     echo "Case prefix: ${case_prefix}" >> ${log_file}
     echo "" >> ${log_file}
@@ -220,7 +234,7 @@ process extractCommonVariantsAndSamples {
     # Extract common variants and samples from Array data
     echo "--- Extracting Array Common Data ---" >> ${log_file}
     plink2 \
-        --bfile ${array_bed.baseName} \
+        --bfile ${array_prefix} \
         --extract common_variants.txt \
         --keep common_samples_keep.txt \
         --make-bed \

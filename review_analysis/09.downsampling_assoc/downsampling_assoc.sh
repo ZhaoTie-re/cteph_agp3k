@@ -9,13 +9,13 @@ set -e
 # Define paths
 PLINK2="/home/b/b37974/plink2"
 WGS_PREFIX="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/18.tommo_panel_filter/cteph_agp3k.lowfreq_common"
-ARRAY_PREFIX="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/snippet_analysis/02.array_check_impute/03.extract_common/cteph_agp3k.array.common"
+ARRAY_PREFIX="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/array/09.maf_hwe_qc/cteph_agp3k.ajsa.mind.geno.rm_mav.auto_chr.maf_hwe_qc"
 COV_FILE="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/19.cov_pheno_prepare/cteph_agp3k.bbj.projection.cov_df.no_age.csv"
 PHENO_FILE="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/wgs/19.cov_pheno_prepare/cteph_agp3k.bbj.projection.pheno_df.csv"
 
 # Output directory
 OUT_DIR="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/review_analysis/09.downsampling_assoc"
-OUT_PREFIX="cteph_agp3k.downsampled"
+OUT_PREFIX="wgs.cteph_agp3k.downsampled"
 
 echo "=================================================="
 echo "Starting downsampling association analysis"
