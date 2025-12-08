@@ -10,10 +10,13 @@ params.SampleIDColumn = 'ID'
 params.SampleSexColumn = 'Sex'
 params.OutcomeColumn = 'OUTCOME2'
 params.CaseValue = 'CTEPH'
-params.MAF_Threshold = 0.01
-params.HWE_Threshold = 1e-6
-params.MAF_FilterMode = 'ALL'
-params.HWE_FilterMode = 'CTRL'
+// MAF filtering parameters
+params.MAF_Threshold = 0.01          // MAF threshold for filtering
+params.MAF_FilterMode = 'ALL'        // Options: 'ALL', 'CASE', 'CTRL'
+// HWE filtering parameters
+params.HWE_FilterMode = 'CTRL|CASE'  // Options: 'CTRL', 'CASE', 'CTRL|CASE'
+params.HWE_CTRL_Threshold = 1e-6     // HWE threshold for controls
+params.HWE_CASE_Threshold = 1e-10    // HWE threshold for cases (only used if FilterMode includes 'CASE')
 
 // 识别成配对的 .bed, .bim, .fam 文件
 Channel
@@ -1680,9 +1683,10 @@ process VariantQC_FilterByMAFandHWE {
     def prefix = bed.baseName
     def output_prefix = "cteph_agp3k.array.sqc.vqc"
     def maf_mode = params.MAF_FilterMode ?: "ALL"
-    def hwe_mode = params.HWE_FilterMode ?: "CTRL"
     def maf_threshold = params.MAF_Threshold ?: 0.01
-    def hwe_threshold = params.HWE_Threshold ?: 1e-6
+    def hwe_mode = params.HWE_FilterMode ?: "CTRL|CASE"
+    def hwe_ctrl_threshold = params.HWE_CTRL_Threshold ?: 1e-6
+    def hwe_case_threshold = params.HWE_CASE_Threshold ?: 1e-10
     """
     echo "=== Variant Filtering by MAF and HWE Report ===" > variant_filter.log
     echo "Date: \$(date)" >> variant_filter.log
@@ -1700,11 +1704,15 @@ process VariantQC_FilterByMAFandHWE {
     
     # 过滤条件
     echo "Filtering criteria:" >> variant_filter.log
-    echo "  MAF mode: ${maf_mode}" >> variant_filter.log
-    echo "  MAF threshold: < ${maf_threshold}" >> variant_filter.log
-    echo "  HWE mode: ${hwe_mode}" >> variant_filter.log
-    echo "  HWE threshold: < ${hwe_threshold}" >> variant_filter.log
-    echo "  Logic: Remove variants if (MAF_${maf_mode} < ${maf_threshold}) OR (HWE_${hwe_mode} < ${hwe_threshold})" >> variant_filter.log
+    echo "  MAF filter mode: ${maf_mode}" >> variant_filter.log
+    echo "  MAF threshold: MAF_${maf_mode} < ${maf_threshold}" >> variant_filter.log
+    echo "  HWE filter mode: ${hwe_mode}" >> variant_filter.log
+    if [[ "${hwe_mode}" == *"CTRL"* ]]; then
+        echo "  HWE CTRL threshold: HWE_CTRL < ${hwe_ctrl_threshold}" >> variant_filter.log
+    fi
+    if [[ "${hwe_mode}" == *"CASE"* ]]; then
+        echo "  HWE CASE threshold: HWE_CASE < ${hwe_case_threshold}" >> variant_filter.log
+    fi
     echo "" >> variant_filter.log
     
     # 使用Python提取需要移除的变异ID
@@ -1723,48 +1731,112 @@ try:
     
     # 检查所需的列是否存在
     maf_col = "MAF_${maf_mode}"
-    hwe_col = "HWE_${hwe_mode}"
+    hwe_mode = "${hwe_mode}"
     
     if maf_col not in df.columns:
         print(f"Error: Column '{maf_col}' not found in TSV file")
         print(f"Available columns: {', '.join(df.columns)}")
         sys.exit(1)
     
-    if hwe_col not in df.columns:
-        print(f"Error: Column '{hwe_col}' not found in TSV file")
+    # 检查HWE相关列
+    use_hwe_ctrl = "CTRL" in hwe_mode
+    use_hwe_case = "CASE" in hwe_mode
+    
+    if use_hwe_ctrl and "HWE_CTRL" not in df.columns:
+        print(f"Error: Column 'HWE_CTRL' not found in TSV file")
+        print(f"Available columns: {', '.join(df.columns)}")
+        sys.exit(1)
+    
+    if use_hwe_case and "HWE_CASE" not in df.columns:
+        print(f"Error: Column 'HWE_CASE' not found in TSV file")
         print(f"Available columns: {', '.join(df.columns)}")
         sys.exit(1)
     
     # 应用过滤条件
-    # 移除: MAF < threshold OR HWE < threshold
     maf_threshold = float("${maf_threshold}")
-    hwe_threshold = float("${hwe_threshold}")
+    hwe_ctrl_threshold = float("${hwe_ctrl_threshold}")
+    hwe_case_threshold = float("${hwe_case_threshold}")
     
-    # 筛选需要移除的变异
+    # MAF过滤
     maf_fail = df[maf_col] < maf_threshold
-    hwe_fail = df[hwe_col] < hwe_threshold
+    
+    # HWE过滤（根据模式）
+    hwe_fail = pd.Series([False] * len(df), index=df.index)
+    hwe_ctrl_fail = pd.Series([False] * len(df), index=df.index)
+    hwe_case_fail = pd.Series([False] * len(df), index=df.index)
+    
+    if use_hwe_ctrl:
+        hwe_ctrl_fail = df["HWE_CTRL"] < hwe_ctrl_threshold
+        hwe_fail = hwe_fail | hwe_ctrl_fail
+    
+    if use_hwe_case:
+        hwe_case_fail = df["HWE_CASE"] < hwe_case_threshold
+        hwe_fail = hwe_fail | hwe_case_fail
+    
+    # 合并所有过滤条件
     to_remove = df[maf_fail | hwe_fail]
     
     print(f"\\nFiltering results:")
     print(f"  Variants failing MAF filter ({maf_col} < {maf_threshold}): {maf_fail.sum()} ({maf_fail.sum()/len(df)*100:.2f}%)")
-    print(f"  Variants failing HWE filter ({hwe_col} < {hwe_threshold}): {hwe_fail.sum()} ({hwe_fail.sum()/len(df)*100:.2f}%)")
-    print(f"  Variants failing either filter (to remove): {len(to_remove)} ({len(to_remove)/len(df)*100:.2f}%)")
-    print(f"  Variants passing both filters (to keep): {len(df) - len(to_remove)} ({(len(df)-len(to_remove))/len(df)*100:.2f}%)")
+    
+    if use_hwe_ctrl:
+        print(f"  Variants failing HWE_CTRL filter (< {hwe_ctrl_threshold}): {hwe_ctrl_fail.sum()} ({hwe_ctrl_fail.sum()/len(df)*100:.2f}%)")
+    
+    if use_hwe_case:
+        print(f"  Variants failing HWE_CASE filter (< {hwe_case_threshold}): {hwe_case_fail.sum()} ({hwe_case_fail.sum()/len(df)*100:.2f}%)")
+    
+    print(f"  Variants failing any filter (to remove): {len(to_remove)} ({len(to_remove)/len(df)*100:.2f}%)")
+    print(f"  Variants passing all filters (to keep): {len(df) - len(to_remove)} ({(len(df)-len(to_remove))/len(df)*100:.2f}%)")
     
     # 保存需要移除的变异ID（不包含列名）
     to_remove["VARIANT_ID"].to_csv("${prefix}.variants_to_remove.txt", index=False, header=False)
     
     print(f"\\nVariant IDs to remove saved to: ${prefix}.variants_to_remove.txt")
     
-    # 统计各种失败组合
-    maf_only = maf_fail & ~hwe_fail
-    hwe_only = hwe_fail & ~maf_fail
-    both_fail = maf_fail & hwe_fail
-    
+    # 统计失败组合
     print(f"\\nFailure breakdown:")
-    print(f"  MAF only: {maf_only.sum()} variants ({maf_only.sum()/len(df)*100:.2f}%)")
-    print(f"  HWE only: {hwe_only.sum()} variants ({hwe_only.sum()/len(df)*100:.2f}%)")
-    print(f"  Both MAF and HWE: {both_fail.sum()} variants ({both_fail.sum()/len(df)*100:.2f}%)")
+    
+    if use_hwe_ctrl and use_hwe_case:
+        # 三个过滤器都启用
+        maf_only = maf_fail & ~hwe_ctrl_fail & ~hwe_case_fail
+        hwe_ctrl_only = ~maf_fail & hwe_ctrl_fail & ~hwe_case_fail
+        hwe_case_only = ~maf_fail & ~hwe_ctrl_fail & hwe_case_fail
+        maf_hwe_ctrl = maf_fail & hwe_ctrl_fail & ~hwe_case_fail
+        maf_hwe_case = maf_fail & ~hwe_ctrl_fail & hwe_case_fail
+        hwe_both = ~maf_fail & hwe_ctrl_fail & hwe_case_fail
+        all_three = maf_fail & hwe_ctrl_fail & hwe_case_fail
+        
+        print(f"  MAF only: {maf_only.sum()} variants ({maf_only.sum()/len(df)*100:.2f}%)")
+        print(f"  HWE_CTRL only: {hwe_ctrl_only.sum()} variants ({hwe_ctrl_only.sum()/len(df)*100:.2f}%)")
+        print(f"  HWE_CASE only: {hwe_case_only.sum()} variants ({hwe_case_only.sum()/len(df)*100:.2f}%)")
+        print(f"  MAF + HWE_CTRL: {maf_hwe_ctrl.sum()} variants ({maf_hwe_ctrl.sum()/len(df)*100:.2f}%)")
+        print(f"  MAF + HWE_CASE: {maf_hwe_case.sum()} variants ({maf_hwe_case.sum()/len(df)*100:.2f}%)")
+        print(f"  HWE_CTRL + HWE_CASE: {hwe_both.sum()} variants ({hwe_both.sum()/len(df)*100:.2f}%)")
+        print(f"  All three filters: {all_three.sum()} variants ({all_three.sum()/len(df)*100:.2f}%)")
+    
+    elif use_hwe_ctrl:
+        # 只有MAF和HWE_CTRL
+        maf_only = maf_fail & ~hwe_ctrl_fail
+        hwe_ctrl_only = ~maf_fail & hwe_ctrl_fail
+        both = maf_fail & hwe_ctrl_fail
+        
+        print(f"  MAF only: {maf_only.sum()} variants ({maf_only.sum()/len(df)*100:.2f}%)")
+        print(f"  HWE_CTRL only: {hwe_ctrl_only.sum()} variants ({hwe_ctrl_only.sum()/len(df)*100:.2f}%)")
+        print(f"  Both MAF + HWE_CTRL: {both.sum()} variants ({both.sum()/len(df)*100:.2f}%)")
+    
+    elif use_hwe_case:
+        # 只有MAF和HWE_CASE
+        maf_only = maf_fail & ~hwe_case_fail
+        hwe_case_only = ~maf_fail & hwe_case_fail
+        both = maf_fail & hwe_case_fail
+        
+        print(f"  MAF only: {maf_only.sum()} variants ({maf_only.sum()/len(df)*100:.2f}%)")
+        print(f"  HWE_CASE only: {hwe_case_only.sum()} variants ({hwe_case_only.sum()/len(df)*100:.2f}%)")
+        print(f"  Both MAF + HWE_CASE: {both.sum()} variants ({both.sum()/len(df)*100:.2f}%)")
+    
+    else:
+        # 只有MAF过滤
+        print(f"  MAF only: {maf_fail.sum()} variants ({maf_fail.sum()/len(df)*100:.2f}%)")
     
 except Exception as e:
     print(f"Error processing TSV file: {e}")
@@ -1845,13 +1917,30 @@ EOF
     echo "     Rationale: Variants with very low minor allele frequency may have" >> variant_filter.log
     echo "                insufficient statistical power for association testing" >> variant_filter.log
     echo "" >> variant_filter.log
-    echo "  2. HWE filter: HWE_${hwe_mode} < ${hwe_threshold}" >> variant_filter.log
-    echo "     Rationale: Significant deviation from Hardy-Weinberg equilibrium may" >> variant_filter.log
-    echo "                indicate genotyping errors or population stratification" >> variant_filter.log
-    echo "     Note: Using ${hwe_mode} samples avoids removing disease-associated variants" >> variant_filter.log
+    
+    filter_num=2
+    if [[ "${hwe_mode}" == *"CTRL"* ]]; then
+        echo "  \${filter_num}. HWE_CTRL filter: HWE_CTRL < ${hwe_ctrl_threshold}" >> variant_filter.log
+        echo "     Rationale: Significant deviation from Hardy-Weinberg equilibrium in" >> variant_filter.log
+        echo "                controls may indicate genotyping errors or population stratification" >> variant_filter.log
+        echo "     Note: Using controls avoids removing disease-associated variants" >> variant_filter.log
+        echo "" >> variant_filter.log
+        filter_num=\$((filter_num + 1))
+    fi
+    
+    if [[ "${hwe_mode}" == *"CASE"* ]]; then
+        echo "  \${filter_num}. HWE_CASE filter: HWE_CASE < ${hwe_case_threshold}" >> variant_filter.log
+        echo "     Rationale: Extreme deviation from HWE in cases may indicate" >> variant_filter.log
+        echo "                genotyping errors or technical artifacts" >> variant_filter.log
+        echo "" >> variant_filter.log
+    fi
+    
+    echo "Filter logic: Variants are REMOVED if they fail ANY criterion" >> variant_filter.log
+    echo "              (i.e., OR logic among all active filters)" >> variant_filter.log
     echo "" >> variant_filter.log
-    echo "Filter logic: Variants are REMOVED if they fail EITHER criterion" >> variant_filter.log
-    echo "              (i.e., OR logic, not AND logic)" >> variant_filter.log
+    echo "Active filter modes:" >> variant_filter.log
+    echo "  - MAF mode: ${maf_mode} (filtering based on MAF_${maf_mode})" >> variant_filter.log
+    echo "  - HWE mode: ${hwe_mode} (filtering based on ${hwe_mode} samples)" >> variant_filter.log
     echo "" >> variant_filter.log
     
     echo "Output files:" >> variant_filter.log
