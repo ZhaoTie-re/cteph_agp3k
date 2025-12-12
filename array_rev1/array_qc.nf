@@ -1,5 +1,5 @@
 params.ArrayRAWPath = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/array/00.raw_data_ph'
-params.SampleSelectList = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/array_rev1/info/cteph_agp3k.v4.ls'
+params.SampleSelectList = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/array_rev1/info/cteph_agp3k.v4.array.ls'
 params.NagasakiPipelinePath = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/nagasaki_pipeline'
 params.ChrRenameFile = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/Info/chr_rename.txt'
 params.OutputDir = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/array_rev1/results'
