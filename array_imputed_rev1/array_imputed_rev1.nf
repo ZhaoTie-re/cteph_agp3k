@@ -277,6 +277,37 @@ process addImputationInfo {
     """
 }
 
+process filterVariants {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '24h'
+    tag "filter_variants"
+    
+    publishDir "${params.OutDir}/07.variant_filter", mode: 'symlink'
+    
+    input:
+    tuple file(annotated_tsv), file(annotated_tbi) from variant_stats_annotated
+    
+    output:
+    file("*.exclude.txt") into variant_exclude_list
+    file("*.upset.png") optional true
+    file("*.upset.pdf") optional true
+    file("*.summary.txt")
+    
+    script:
+    in_prefix = annotated_tsv.baseName.replaceAll(/\.annotated\.tsv$/, '')
+    out_prefix = "${in_prefix}.filtered"
+    """
+    source activate cteph_geno_pro 
+    # Filter variants based on quality metrics
+    python3 ${params.ScriptsDir}/filter_variants.py \
+        --input ${annotated_tsv} \
+        --config ${params.ScriptsDir}/variant_filter_config.json \
+        --output-prefix ${out_prefix} \
+        --chunk-size 500000
+    """
+}
+
 
 
 

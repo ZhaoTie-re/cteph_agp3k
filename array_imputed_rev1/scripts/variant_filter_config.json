@@ -1,0 +1,18 @@
+{
+  "description": "Variant filtering configuration - OR logic (variants matching ANY condition will be excluded)",
+  "filters": [
+    "VMISS_CASE >= 0.02",
+    "VMISS_CTRL >= 0.02",
+    "MAF_ALL < 0.01",
+    "HWE_CASE < 1e-10",
+    "HWE_CTRL < 1e-06",
+    "IMPUTED_R2 < 0.7"
+  ],
+  "available_metrics": [
+    "VMISS_ALL", "VMISS_CASE", "VMISS_CTRL",
+    "MAF_ALL", "MAF_CASE", "MAF_CTRL",
+    "HWE_ALL", "HWE_CASE", "HWE_CTRL",
+    "IMPUTED_R2"
+  ],
+  "supported_operators": ["<", "<=", ">", ">=", "==", "!="]
+}
