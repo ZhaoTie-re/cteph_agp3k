@@ -194,7 +194,7 @@ process sampleQC {
     tuple file(pgen), file(pvar), file(psam) from pmerge_out_qc
     
     output:
-    tuple file("*.sqc.pgen"), file("*.sqc.pvar"), file("*.sqc.psam") into sample_qc_out, sample_qc_out_2
+    tuple file("*.sqc.pgen"), file("*.sqc.pvar"), file("*.sqc.psam") into sample_qc_out, sample_qc_out_2, sample_qc_out_3
     file("*.log")
     file("*.smiss")
     
@@ -308,7 +308,62 @@ process filterVariants {
     """
 }
 
+process variantQC {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '12h'
+    tag "exclude_variants"
+    
+    publishDir "${params.OutDir}/08.variant_qc", mode: 'symlink'
+    
+    input:
+    tuple file(pgen), file(pvar), file(psam) from sample_qc_out_3
+    file(exclude_list) from variant_exclude_list
+    
+    output:
+    tuple file("*.vqc.pgen"), file("*.vqc.pvar"), file("*.vqc.psam") into variant_qc_out
+    file("*.log")
+    
+    script:
+    in_prefix = pgen.baseName.replaceAll(/\.pgen$/, '')
+    out_prefix = "${in_prefix}.vqc"
+    """
+    # Exclude variants from plink fileset
+    ${params.Plink2} \
+        --pfile ${in_prefix} \
+        --exclude ${exclude_list} \
+        --make-pgen \
+        --out ${out_prefix} \
+        --threads 8
+    """
+}
 
-
+process eraseGenotypeHardcall {
+    executor 'slurm'
+    queue 'gr10478b'
+    time '12h'
+    tag "gt_hardcall"
+    
+    publishDir "${params.OutDir}/09.gt_hardcall", mode: 'symlink'
+    
+    input:
+    tuple file(pgen), file(pvar), file(psam) from variant_qc_out
+    
+    output:
+    tuple file("*.gt.pgen"), file("*.gt.pvar"), file("*.gt.psam") into gt_hardcall_out
+    file("*.log")
+    
+    script:
+    in_prefix = pgen.baseName.replaceAll(/\.pgen$/, '')
+    out_prefix = "${in_prefix}.gt"
+    """
+    # Erase dosage information, keep only hard-called genotypes (GT)
+    ${params.Plink2} \
+        --pfile ${in_prefix} \
+        --make-pgen erase-dosage \
+        --out ${out_prefix} \
+        --threads 8
+    """
+}
 
 
