@@ -595,6 +595,7 @@ def main():
     parser.add_argument('--log-file', required=True, help='Log file path')
     parser.add_argument('--threads', type=int, default=None, help='Number of threads for parallel processing')
     parser.add_argument('--tabix', required=True, help='Path to tabix executable')
+    parser.add_argument('--min-maf', type=float, help='Minimum MAF to filter variants (using MAF_ALL column)')
     
     args = parser.parse_args()
     
@@ -651,6 +652,19 @@ def main():
         merged_with_stats = pd.merge(merged, variant_stats, left_on='SNPID', right_on='ID', how='left')
         logger.info(f"Merged with variant statistics: {len(merged_with_stats):,} variants")
         
+        # Apply MAF filter if requested
+        if args.min_maf is not None:
+             if 'MAF_ALL' in merged_with_stats.columns:
+                 logger.info(f"Filtering variants with MAF_ALL >= {args.min_maf}")
+                 before = len(merged_with_stats)
+                 # Ensure MAF_ALL is numeric
+                 merged_with_stats['MAF_ALL'] = pd.to_numeric(merged_with_stats['MAF_ALL'], errors='coerce')
+                 merged_with_stats = merged_with_stats[merged_with_stats['MAF_ALL'] >= args.min_maf]
+                 after = len(merged_with_stats)
+                 logger.info(f"  Retained {after} variants (dropped {before - after})")
+             else:
+                 logger.warning("MAF_ALL column not found, filtering via --min-maf is skipped")
+
         # Prepare arguments for parallel processing
         plot_args = [
             (col, merged_with_stats.copy(), args.name1, args.name2, 
