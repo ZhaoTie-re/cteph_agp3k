@@ -10,7 +10,7 @@ SCRIPT_DIR=$(dirname "$0")/scripts
 WORK_DIR=$(dirname "$0")
 
 # Input File Paths (Modify these defaults if needed)
-ASSOC_FILE="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/analysis/assoc_rvtest.rev1/results/07.sensitivity_check/01.rvtest_run/impact_moderate_high.stat1/skato/cteph_agp3k.rare.impact_moderate_high.stat1.skato.SkatO.assoc" 
+ASSOC_FILE="/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/analysis/assoc_rvtest.rev1/results/07.sensitivity_check/01.rvtest_run/impact_moderate_high.stat1_stat2/skato/cteph_agp3k.rare.impact_moderate_high.stat1_stat2.skato.SkatO.assoc" 
 # Assuming one assoc file. If parameterization needed, add argument.
 # But request says "RVTest results file (parameterized)" so let's allow override via env var or arg?
 # Ideally, hardcode the main one or detect? 
@@ -82,6 +82,33 @@ else
    VCF_FILE=${3:-"$DEFAULT_VCF"}
 fi
 
+# Determine Post Process Files (Burden & SKATO with FDR)
+BURDEN_FILE=""
+SKATO_FILE=""
+
+if [[ "$ASSOC_FILE" == *"/01.rvtest_run/"* ]]; then
+    # Extract Group Name (folder name after 01.rvtest_run)
+    GROUP_NAME=$(echo "$ASSOC_FILE" | awk -F'/01.rvtest_run/' '{print $2}' | cut -d'/' -f1)
+    
+    # Extract Results Root
+    RESULTS_ROOT=$(echo "$ASSOC_FILE" | awk -F'/01.rvtest_run/' '{print $1}')
+    POST_PROCESS_DIR="${RESULTS_ROOT}/02.post_process/${GROUP_NAME}"
+    
+    if [ -d "$POST_PROCESS_DIR" ]; then
+        # Format: cteph_agp3k.rare.{GROUP}.burden.CMC.filtered.fdr.assoc
+        #         cteph_agp3k.rare.{GROUP}.skato.SkatO.filtered.fdr.assoc
+        
+        BURDEN_CANDIDATE="${POST_PROCESS_DIR}/burden/cteph_agp3k.rare.${GROUP_NAME}.burden.CMC.filtered.fdr.assoc"
+        SKATO_CANDIDATE="${POST_PROCESS_DIR}/skato/cteph_agp3k.rare.${GROUP_NAME}.skato.SkatO.filtered.fdr.assoc"
+        
+        if [ -f "$BURDEN_CANDIDATE" ]; then BURDEN_FILE="$BURDEN_CANDIDATE"; fi
+        if [ -f "$SKATO_CANDIDATE" ]; then SKATO_FILE="$SKATO_CANDIDATE"; fi
+    fi
+fi
+
+if [ -n "$BURDEN_FILE" ]; then echo "Auto-detected Burden File: $BURDEN_FILE"; fi
+if [ -n "$SKATO_FILE" ]; then echo "Auto-detected SKAT-O File: $SKATO_FILE"; fi
+
 PLINK_PREFIX=${4:-"/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/analysis/assoc_rvtest.rev1/results/00.pre_step/cteph_agp3k.rare.mac2.rm_samples"}
 TOMMO_VCF=${5:-"/LARGE0/gr10478/b37974/Pulmonary_Hypertension/ToMMo_60KJPN/tommo-60kjpn-20240904-GRCh38-snvindel-af-autosome.norm.vcf.gz"}
 PHENO_FILE=${6:-"/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/analysis/assoc_rvtest.rev1/results/01.rvtest_prepare/cteph_agp3k.bbj.projection.pheno_df.csv"}
@@ -95,6 +122,11 @@ PLINK2_PATH="/home/b/b37974/plink2_alpha6/plink2"
 TMP_DIR="${WORK_DIR}/tmp/${GENE_NAME}_$(date +%s)"
 mkdir -p ${TMP_DIR}
 LOG_FILE="${WORK_DIR}/${GENE_NAME}.detail.log"
+
+# Clean up previous log to ensure we don't see stale results if python fails
+if [ -f "${LOG_FILE}" ]; then
+    rm "${LOG_FILE}"
+fi
 
 echo "=========================================="
 echo "Checking Gene: ${GENE_NAME}"
@@ -112,6 +144,8 @@ source activate cteph_geno_pro
 python ${SCRIPT_DIR}/check_gene_detail.py \
     --gene ${GENE_NAME} \
     --assoc-file ${ASSOC_FILE} \
+    --burden-file "${BURDEN_FILE}" \
+    --skato-file "${SKATO_FILE}" \
     --vcf-file ${VCF_FILE} \
     --plink-prefix ${PLINK_PREFIX} \
     --tommo-vcf ${TOMMO_VCF} \

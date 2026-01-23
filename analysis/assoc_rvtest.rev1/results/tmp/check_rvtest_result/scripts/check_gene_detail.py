@@ -92,10 +92,31 @@ def get_rvtest_info(assoc_file, gene):
         print(f"[ERROR] Reading assoc file: {e}")
         sys.exit(1)
 
+def get_extended_stats(file_path, gene, fields):
+    if not file_path or not os.path.exists(file_path):
+        return {f: "NA" for f in fields}
+    try:
+        df = pd.read_csv(file_path, sep=r'\s+', engine='python')
+        row = df[df['Gene'] == gene]
+        if row.empty:
+            return {f: "NA" for f in fields}
+        res = {}
+        for f in fields:
+            if f in row.columns:
+                res[f] = str(row.iloc[0][f])
+            else:
+                res[f] = "NA"
+        return res
+    except Exception as e:
+        print(f"[WARNING] Could not read stats from {file_path}: {e}")
+        return {f: "NA" for f in fields}
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--gene", required=True)
     parser.add_argument("--assoc-file", required=True)
+    parser.add_argument("--burden-file", required=False, help="Path to Burden FDR file")
+    parser.add_argument("--skato-file", required=False, help="Path to SKAT-O FDR file")
     parser.add_argument("--vcf-file", required=True)
     parser.add_argument("--plink-prefix", required=True)
     parser.add_argument("--tommo-vcf", required=True)
@@ -147,6 +168,7 @@ def main():
     region_arg = ",".join(region_strs)
     
     vcf_ids_file = os.path.join(args.out_dir, "vcf_extracted_ids.txt")
+    vcf_info_file = os.path.join(args.out_dir, "vcf_extracted_info.txt")
     
     # Run bcftools query to get IDs
     cmd_query = (f"bcftools query -f '%ID\\n' "
@@ -154,6 +176,59 @@ def main():
                  f"{args.vcf_file} > {vcf_ids_file}")
                  
     run_cmd(cmd_query, verbose=True)
+
+    # Load VCF Info into Dictionary
+    vcf_info_dict = {}
+
+    # Helper function to try extraction of ONE tag from a list of candidates
+    def extract_field_robust(candidates, out_str_key, idx_in_dict):
+        # candidates: list of strings like ["%INFO/IMPACT", "%INFO/impact"]
+        # idx_in_dict: 0 for Impact, 1 for Effect
+        
+        found = False
+        temp_out = os.path.join(args.out_dir, f"vcf_extract_{out_str_key}.txt")
+        
+        for cand in candidates:
+            # Try query
+            cmd = (f"bcftools query -f '%ID\\t{cand}\\n' "
+                   f"-r {region_arg} "
+                   f"{args.vcf_file} > {temp_out}")
+            
+            # print(f"[DEBUG] Trying {cand}")
+            try:
+                subprocess.check_call(cmd, shell=True, executable='/bin/bash', stderr=subprocess.DEVNULL)
+                # If we are here, it worked.
+                found = True
+                break
+            except subprocess.CalledProcessError:
+                continue
+        
+        if found and os.path.exists(temp_out):
+            with open(temp_out, 'r') as f:
+                for line in f:
+                    parts = line.strip().split('\t')
+                    if not parts: continue
+
+                    vid = parts[0]
+                    if not vid: continue
+                    
+                    # Logic: If value is missing, empty, or ".", treat as "."
+                    val = "."
+                    if len(parts) >= 2:
+                        raw_val = parts[1].strip()
+                        if raw_val and raw_val != ".":
+                            val = raw_val
+                        
+                    if vid not in vcf_info_dict: vcf_info_dict[vid] = [".", "."]
+                    vcf_info_dict[vid][idx_in_dict] = val
+        else:
+             print(f"[WARNING] Could not extract {out_str_key} (tried: {candidates})")
+
+    # 1. Try IMPACT (upper or lower)
+    extract_field_robust(["%INFO/IMPACT", "%INFO/impact"], "impact", 0)
+
+    # 2. Try EFFECT (upper or lower)
+    extract_field_robust(["%INFO/EFFECT", "%INFO/effect"], "effect", 1)
 
     # 4. Prepare Case/Control Lists from Pheno File
     print("Preparing sample lists...")
@@ -247,7 +322,8 @@ def main():
                     f.write(reg + "\n")
             
             # Tommo VCF query using specific regions
-            cmd_tommo = (f"bcftools query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%INFO/AF\\n' "
+            # Added %ID to get rsID
+            cmd_tommo = (f"bcftools query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%INFO/AF\\t%ID\\n' "
                          f"-R {tommo_regions_file} "
                          f"{args.tommo_vcf} > {tommo_out}")
             run_cmd(cmd_tommo, verbose=True)
@@ -257,15 +333,20 @@ def main():
         # Read Tommo into dict
         if os.path.exists(tommo_out):
             try:
-                # CHROM POS REF ALT AF
+                # CHROM POS REF ALT AF ID
                 # Check if file is empty
                 if os.stat(tommo_out).st_size > 0:
-                    t_df = pd.read_csv(tommo_out, sep='\t', header=None, names=['CHROM', 'POS', 'REF', 'ALT', 'AF'])
+                    t_df = pd.read_csv(tommo_out, sep='\t', header=None, names=['CHROM', 'POS', 'REF', 'ALT', 'AF', 'ID'])
                     for _, row in t_df.iterrows():
                         # Normalize CHROM key to strip 'chr' to match Plink output '3'
                         c_key = str(row['CHROM']).replace('chr', '')
                         key = f"{c_key}:{row['POS']}:{row['REF']}:{row['ALT']}"
-                        tommo_dict[key] = row['AF']
+                        
+                        # Handle rsID
+                        rsid_val = str(row['ID'])
+                        if not rsid_val or rsid_val.lower() == 'nan': rsid_val = "."
+                        
+                        tommo_dict[key] = (row['AF'], rsid_val)
             except Exception as e:
                 print(f"[WARNING] Failed to read Tommo output: {e}")
     else:
@@ -403,21 +484,37 @@ def main():
         
         # Tommo
         tommo_key = f"{chrom}:{pos}:{ref}:{alt}"
-        val = tommo_dict.get(tommo_key, "NA")
-        if val != "NA":
-             tommo_af = f"{float(val):.6f}"
+        val = tommo_dict.get(tommo_key, ("NA", "."))
+        
+        val_af = "NA"
+        val_rsid = "."
+        
+        if isinstance(val, tuple):
+             val_af = val[0]
+             val_rsid = val[1]
+        else:
+             val_af = val
+             
+        if val_af != "NA":
+             tommo_af = f"{float(val_af):.6f}"
         else:
              tommo_af = "NA"
+             
+        # VCF Info
+        (imp, eff) = vcf_info_dict.get(vid, (".", "."))
         
         rec = {
             "SNPID": vid,
+            "rsID": val_rsid,
+            "Impact": imp,
+            "Effect": eff,
             "Case_Geno": f"{int(g_homref_case)}/{int(g_het_case)}/{int(g_homalt_case)}/{int(g_miss_case)}",
             "Ctrl_Geno": f"{int(g_homref_ctrl)}/{int(g_het_ctrl)}/{int(g_homalt_ctrl)}/{int(g_miss_ctrl)}",
             "Case_AAF": f"{af_case:.6f}",
             "Ctrl_AAF": f"{af_ctrl:.6f}",
             "Case_MissRate": f"{miss_rate_case:.6f}",
             "Ctrl_MissRate": f"{miss_rate_ctrl:.6f}",
-            "Tommo_AAF": tommo_af
+            "ToMMo_AAF": tommo_af
         }
         variant_records.append(rec)
 
@@ -442,15 +539,28 @@ def main():
         f.write("Case_Geno/Ctrl_Geno: Observed genotype counts (Ref/Het/Alt/Miss).\n")
         f.write("Case_AAF/Ctrl_AAF: Alternative Allele Frequency calculated by Plink.\n")
         f.write("Tommo_AAF: Allele Frequency from ToMMo database (if available).\n")
+        f.write("rsID: dbSNP ID from ToMMo VCF.\n")
+        f.write("Impact/Effect: Variant annotation from VCF (INFO/IMPACT, INFO/EFFECT).\n")
         f.write("================================================\n\n")
+
+        # Get Additional Stats
+        burden_stats = get_extended_stats(args.burden_file, args.gene, ['Pvalue', 'FDR'])
+        skato_stats = get_extended_stats(args.skato_file, args.gene, ['Pvalue', 'FDR', 'rho'])
 
         # Part 1: Gene Stats
         f.write(f"=== Gene Summary: {args.gene} ===\n")
         f.write(f"Assoc_File: {args.assoc_file}\n")
         f.write(f"VCF_File: {args.vcf_file}\n")
         f.write(f"Plink_Prefix: {args.plink_prefix}\n")
+        f.write(f"Burden_File: {args.burden_file if args.burden_file else 'NA'}\n")
+        f.write(f"SKAT-O_File: {args.skato_file if args.skato_file else 'NA'}\n")
         f.write(f"RVTest_NumVar: {rvtest_numvar}\n")
         f.write(f"VCF_Hit_NumVar: {num_vcf_hits}\n")
+        f.write(f"Burden_Pvalue: {burden_stats['Pvalue']}\n")
+        f.write(f"Burden_FDR: {burden_stats['FDR']}\n")
+        f.write(f"SKAT-O_Pvalue: {skato_stats['Pvalue']}\n")
+        f.write(f"SKAT-O_FDR: {skato_stats['FDR']}\n")
+        f.write(f"SKAT-O_Rho: {skato_stats['rho']}\n")
         f.write(f"Total_MAC_Gene: {int(total_mac_case + total_mac_ctrl)}\n")
         f.write(f"Total_MAC_Case: {int(total_mac_case)}\n")
         f.write(f"Total_MAC_Ctrl: {int(total_mac_ctrl)}\n")
@@ -469,20 +579,23 @@ def main():
         
         # Part 2: Variant Details
         f.write("=== Variant Details ===\n")
-        header = ["SNPID", "Case_Geno(Ref/Het/Alt/Miss)", "Ctrl_Geno(Ref/Het/Alt/Miss)", 
-                  "Case_AAF", "Ctrl_AAF", "Case_MissRate", "Ctrl_MissRate", "Tommo_AAF"]
+        header = ["SNPID", "rsID", "Impact", "Effect", "Case_Geno(Ref/Het/Alt/Miss)", "Ctrl_Geno(Ref/Het/Alt/Miss)", 
+                  "Case_AAF", "Ctrl_AAF", "ToMMo_AAF", "Case_MissRate", "Ctrl_MissRate"]
         f.write("\t".join(header) + "\n")
         
         for rec in variant_records:
             row = [
                 rec["SNPID"],
+                rec["rsID"],
+                rec["Impact"],
+                rec["Effect"],
                 rec["Case_Geno"],
                 rec["Ctrl_Geno"],
                 rec["Case_AAF"],
                 rec["Ctrl_AAF"],
+                rec["ToMMo_AAF"],
                 rec["Case_MissRate"],
-                rec["Ctrl_MissRate"],
-                rec["Tommo_AAF"]
+                rec["Ctrl_MissRate"]
             ]
             f.write("\t".join(row) + "\n")
 
