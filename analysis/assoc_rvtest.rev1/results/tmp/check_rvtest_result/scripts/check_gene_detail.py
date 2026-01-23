@@ -1,0 +1,492 @@
+import argparse
+import pandas as pd
+import subprocess
+import os
+import sys
+import re
+import shutil
+import glob
+import gzip
+
+def run_cmd(cmd, verbose=False):
+    if verbose:
+        print(f"[CMD] {cmd}")
+    try:
+        subprocess.check_call(cmd, shell=True, executable='/bin/bash')
+    except subprocess.CalledProcessError as e:
+        print(f"[ERROR] Command failed: {cmd}")
+        sys.exit(1)
+
+def parse_ranges(range_str):
+    parts = range_str.split(',')
+    valid_regions = []
+    
+    # Valid Chromosomes: 1-22, X, Y, MT, M
+    valid_chrs = set([str(i) for i in range(1, 23)] + ['X', 'Y', 'M', 'MT'])
+    
+    for part in parts:
+        part = part.strip()
+        if not part: continue
+        
+        # Regex to match chr:start-end
+        match = re.match(r'^((?:chr)?([0-9A-Za-z]+)):(\d+)-(\d+)$', part)
+        if match:
+            full_chr = match.group(1)
+            raw_chr = match.group(2).upper().replace('CHR', '')
+            start = match.group(3)
+            end = match.group(4)
+            
+            if raw_chr in valid_chrs:
+                # Store tuple for formatted output
+                valid_regions.append((full_chr, start, end))
+    
+    return valid_regions
+
+def get_gene_range_from_refflat(refflat_file, gene):
+    # Retrieve union of all transcripts for the gene
+    # refFlat: geneName name chrom strand txStart txEnd ...
+    if not os.path.exists(refflat_file):
+        return None
+    
+    ranges = []
+    try:
+        with gzip.open(refflat_file, 'rt') as f:
+            for line in f:
+                parts = line.strip().split('\t')
+                if len(parts) < 6: continue
+                if parts[0] == gene:
+                    chrom = parts[2]
+                    start = parts[4]
+                    end = parts[5]
+                    # RVTest often uses the format chr:start-end
+                    # Ensure chrom has 'chr' prefix if needed? 
+                    # RefFlat usually doesn't have 'chr' in some versions, check input
+                    # Our refFlat seems to not have 'chr' based on filename 'nochr'
+                    # But VCF usually has non-chr or chr depending on build.
+                    # The parts[2] from user `cat` was '3' (no chr)
+                    # We will format as matches the parse_ranges expectation
+                    ranges.append(f"{chrom}:{start}-{end}")
+                    
+        if not ranges:
+            return None
+        return ",".join(ranges)
+        
+    except Exception as e:
+        print(f"[ERROR] Reading refFlat: {e}")
+        return None
+
+def get_rvtest_info(assoc_file, gene):
+    # Columns: Gene RANGE N_INFORMATIVE NumVar NumPolyVar Q rho Pvalue
+    try:
+        # Check delimiter, usually tab or whitespace
+        df = pd.read_csv(assoc_file, sep=r'\s+', engine='python')
+        row = df[df['Gene'] == gene]
+        if row.empty:
+            return None, None
+        
+        # RANGE is comma separated list of regions
+        gene_range = row.iloc[0]['RANGE']
+        num_var = row.iloc[0]['NumVar']
+        return gene_range, num_var
+    except Exception as e:
+        print(f"[ERROR] Reading assoc file: {e}")
+        sys.exit(1)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--gene", required=True)
+    parser.add_argument("--assoc-file", required=True)
+    parser.add_argument("--vcf-file", required=True)
+    parser.add_argument("--plink-prefix", required=True)
+    parser.add_argument("--tommo-vcf", required=True)
+    parser.add_argument("--out-dir", required=True)
+    parser.add_argument("--out-log", required=True)
+    parser.add_argument("--plink2-path", required=True)
+    parser.add_argument("--pheno-file", required=True)
+    parser.add_argument("--refflat-file", required=False)
+    
+    args = parser.parse_args()
+    
+    # 1. Get Gene Info
+    gene_range_str = None
+    rvtest_numvar = "NA"
+    
+    # Try getting info from Refflat first if provided
+    if args.refflat_file:
+        print(f"Reading RefFlat: {args.refflat_file}")
+        gene_range_str = get_gene_range_from_refflat(args.refflat_file, args.gene)
+        
+    # Get NumVar from Assoc file (and Range if refFlat failed or not provided)
+    assoc_range, num_var = get_rvtest_info(args.assoc_file, args.gene)
+    if num_var is not None:
+         rvtest_numvar = num_var
+         
+    if not gene_range_str:
+        if assoc_range:
+            print("Using range from Assoc File.")
+            gene_range_str = assoc_range
+        else:
+             print(f"[ERROR] Gene {args.gene} not found in assoc file and refFlat invalid.")
+             sys.exit(1)
+    else:
+         print("Using range from RefFlat.")
+
+    # 2. Parse Ranges
+    valid_ranges = parse_ranges(gene_range_str)
+    if not valid_ranges:
+        print("[ERROR] No valid ranges found for gene.")
+        sys.exit(1)
+    
+    # 3. Extract IDs from VCF using regions
+    print("Extracting variants from VCF...")
+    
+    # Construct region string for -r (format: chr:start-end,chr:start-end)
+    region_strs = []
+    for (c, s, e) in valid_ranges:
+        region_strs.append(f"{c}:{s}-{e}")
+    region_arg = ",".join(region_strs)
+    
+    vcf_ids_file = os.path.join(args.out_dir, "vcf_extracted_ids.txt")
+    
+    # Run bcftools query to get IDs
+    cmd_query = (f"bcftools query -f '%ID\\n' "
+                 f"-r {region_arg} "
+                 f"{args.vcf_file} > {vcf_ids_file}")
+                 
+    run_cmd(cmd_query, verbose=True)
+
+    # 4. Prepare Case/Control Lists from Pheno File
+    print("Preparing sample lists...")
+    try:
+        # Expected cols: fid, iid, ..., pheno1
+        # Try tab first
+        pheno_df = pd.read_csv(args.pheno_file, sep='\t')
+        if 'pheno1' not in pheno_df.columns:
+             # Try whitespace
+             pheno_df = pd.read_csv(args.pheno_file, sep=r'\s+', engine='python')
+        
+        if 'pheno1' not in pheno_df.columns:
+            print("[ERROR] Could not find 'pheno1' in pheno file.")
+            sys.exit(1)
+            
+        # Case = 2, Control = 1
+        case_file = os.path.join(args.out_dir, "cases.txt")
+        ctrl_file = os.path.join(args.out_dir, "controls.txt")
+        
+        # Write FID IID for PLINK --keep
+        pheno_df[pheno_df['pheno1'] == 2][['fid', 'iid']].to_csv(case_file, sep='\t', index=False, header=False)
+        pheno_df[pheno_df['pheno1'] == 1][['fid', 'iid']].to_csv(ctrl_file, sep='\t', index=False, header=False)
+        
+        n_case = len(pheno_df[pheno_df['pheno1'] == 2])
+        n_ctrl = len(pheno_df[pheno_df['pheno1'] == 1])
+        print(f"Cases: {n_case}, Controls: {n_ctrl}")
+        
+    except Exception as e:
+        print(f"[ERROR] Processing pheno file: {e}")
+        sys.exit(1)
+    
+    # Run Plink for Cases
+    print("Running PLINK for Cases...")
+    prefix_case = os.path.join(args.out_dir, "stats_case")
+    # Output: .afreq (AAF), .gcount (Genocounts), .vmiss (Missing)
+    # Removed 'mac' from cols, PLINK2 calculates freq/obs_ct
+    cmd_mk_case = (f"{args.plink2_path} --bfile {args.plink_prefix} "
+                   f"--extract {vcf_ids_file} "
+                   f"--keep {case_file} "
+                   f"--freq cols=chrom,pos,ref,alt,alt1,nobs,altfreq "
+                   f"--geno-counts "
+                   f"--missing "
+                   f"--out {prefix_case} --threads 4 > /dev/null")
+    run_cmd(cmd_mk_case)
+    
+    # Run Plink for Ctrls
+    print("Running PLINK for Controls...")
+    prefix_ctrl = os.path.join(args.out_dir, "stats_ctrl")
+    cmd_mk_ctrl = (f"{args.plink2_path} --bfile {args.plink_prefix} "
+                   f"--extract {vcf_ids_file} "
+                   f"--keep {ctrl_file} "
+                   f"--freq cols=chrom,pos,ref,alt,alt1,nobs,altfreq "
+                   f"--geno-counts "
+                   f"--missing "
+                   f"--out {prefix_ctrl} --threads 4 > /dev/null")
+    run_cmd(cmd_mk_ctrl)
+    
+    # 5. Extract Tommo Frequencies
+    print("Extracting Tommo frequencies...")
+    tommo_out = os.path.join(args.out_dir, "tommo_af.txt")
+    tommo_dict = {}
+    
+    if args.tommo_vcf and os.path.exists(args.tommo_vcf):
+        # Build Regions from extracted IDs (Found in VCF)
+        # ToMMo requires 'chr' prefix usually, whereas our VCF might use '3'
+        # Our IDs are typically formatted as chr:pos:ref:alt (from pipeline)
+        
+        tommo_regions_file = os.path.join(args.out_dir, "tommo_regions.txt")
+        unique_regions = set()
+        
+        if os.path.exists(vcf_ids_file):
+            with open(vcf_ids_file, 'r') as f:
+                for line in f:
+                    vid = line.strip()
+                    if not vid: continue
+                    # Parse ID: chr:pos:ref:alt
+                    parts = vid.split(':')
+                    if len(parts) >= 2:
+                        chrom = parts[0]
+                        pos = parts[1]
+                        
+                        # Normalize for ToMMo (Needs chr prefix usually)
+                        if not chrom.startswith('chr'):
+                            chrom = 'chr' + chrom
+                        
+                        unique_regions.add(f"{chrom}\t{pos}")
+        
+        if unique_regions:
+            with open(tommo_regions_file, 'w') as f:
+                for reg in unique_regions:
+                    f.write(reg + "\n")
+            
+            # Tommo VCF query using specific regions
+            cmd_tommo = (f"bcftools query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%INFO/AF\\n' "
+                         f"-R {tommo_regions_file} "
+                         f"{args.tommo_vcf} > {tommo_out}")
+            run_cmd(cmd_tommo, verbose=True)
+        else:
+             print("[WARNING] No variant IDs found to query Tommo.")
+
+        # Read Tommo into dict
+        if os.path.exists(tommo_out):
+            try:
+                # CHROM POS REF ALT AF
+                # Check if file is empty
+                if os.stat(tommo_out).st_size > 0:
+                    t_df = pd.read_csv(tommo_out, sep='\t', header=None, names=['CHROM', 'POS', 'REF', 'ALT', 'AF'])
+                    for _, row in t_df.iterrows():
+                        # Normalize CHROM key to strip 'chr' to match Plink output '3'
+                        c_key = str(row['CHROM']).replace('chr', '')
+                        key = f"{c_key}:{row['POS']}:{row['REF']}:{row['ALT']}"
+                        tommo_dict[key] = row['AF']
+            except Exception as e:
+                print(f"[WARNING] Failed to read Tommo output: {e}")
+    else:
+        print("[WARNING] Tommo VCF not found or not provided.")
+
+    # 6. Aggregate Data and Write Log
+    
+    try:
+        # Load Frequency / MAC
+        # Plink2 .afreq format: #CHROM POS ID REF ALT ALT1 OBS_CT ALT_FREQS (or similar)
+        case_freq = pd.read_csv(prefix_case + ".afreq", sep='\t')
+        ctrl_freq = pd.read_csv(prefix_ctrl + ".afreq", sep='\t')
+        
+        # Load Geno Counts
+        # Plink2 .gcount format: #CHROM POS ID REF ALT HOM_REF HET HOM_ALT MISSING
+        case_gcount = pd.read_csv(prefix_case + ".gcount", sep='\t')
+        ctrl_gcount = pd.read_csv(prefix_ctrl + ".gcount", sep='\t')
+        
+        # Load Missing
+        # Plink2 .vmiss format: #CHROM POS ID REF ALT F_MISS
+        case_miss = pd.read_csv(prefix_case + ".vmiss", sep='\t')
+        ctrl_miss = pd.read_csv(prefix_ctrl + ".vmiss", sep='\t')
+
+        # Clean Column Names (Strip whitespace)
+        for df in [case_freq, ctrl_freq, case_gcount, ctrl_gcount, case_miss, ctrl_miss]:
+            df.columns = df.columns.str.strip()
+            
+    except Exception as e:
+        print(f"[ERROR] Failed to load PLINK stats: {e}")
+        # If files empty (no variants found in plink), handle gracefully
+        case_freq = pd.DataFrame()
+        ctrl_freq = pd.DataFrame()
+        case_gcount = pd.DataFrame()
+        ctrl_gcount = pd.DataFrame()
+        case_miss = pd.DataFrame()
+        ctrl_miss = pd.DataFrame()
+    
+    # Identify Freq Column Name (ALT_FREQS or ALT_FREQ)
+    freq_col_name = 'ALT_FREQS'
+    if not case_freq.empty:
+        found = next((c for c in case_freq.columns if 'FREQ' in c), None)
+        if found: freq_col_name = found
+
+    # Prepare List of Records
+    variant_records = []
+    
+    total_mac_case = 0
+    total_mac_ctrl = 0
+    total_alleles_case = 0
+    total_alleles_ctrl = 0
+    
+    # Helper to get value
+    def get_val(df, id_val, col):
+        if df.empty: return 0
+        if 'ID' not in df.columns: return 0
+        row = df[df['ID'] == id_val]
+        if row.empty: return 0
+        try:
+             return row.iloc[0][col]
+        except:
+             return 0
+
+    # Get set of all IDs from freq files (variants present in Plink)
+    all_plink_ids = set()
+    if not case_freq.empty and 'ID' in case_freq.columns:
+        all_plink_ids = all_plink_ids.union(set(case_freq['ID']))
+    if not ctrl_freq.empty and 'ID' in ctrl_freq.columns:
+        all_plink_ids = all_plink_ids.union(set(ctrl_freq['ID']))
+    
+    for vid in all_plink_ids:
+        # Basic Info
+        row_c = pd.DataFrame()
+        if not case_freq.empty and 'ID' in case_freq.columns:
+             row_c = case_freq[case_freq['ID'] == vid]
+        
+        if row_c.empty and not ctrl_freq.empty and 'ID' in ctrl_freq.columns:
+            row_c = ctrl_freq[ctrl_freq['ID'] == vid]
+            
+        if row_c.empty: continue
+
+        chrom = str(row_c.iloc[0]['#CHROM'])
+        pos = str(row_c.iloc[0]['POS'])
+        ref = str(row_c.iloc[0]['REF'])
+        alt_col = next((c for c in row_c.columns if c.startswith('ALT')), 'ALT')
+        alt = str(row_c.iloc[0][alt_col]) 
+        
+        # MAC Calculation
+        obs_case = get_val(case_freq, vid, 'OBS_CT')
+        obs_ctrl = get_val(ctrl_freq, vid, 'OBS_CT')
+        
+        af_case = get_val(case_freq, vid, freq_col_name)
+        af_ctrl = get_val(ctrl_freq, vid, freq_col_name)
+        
+        mac_case = int(round(obs_case * af_case))
+        mac_ctrl = int(round(obs_ctrl * af_ctrl))
+
+        # Guarantee Minor Allele Calculation
+        # Check if ALT is major (Pooled AF > 0.5)
+        comb_mac = mac_case + mac_ctrl
+        comb_obs = obs_case + obs_ctrl
+        
+        is_alt_major = False
+        if comb_obs > 0:
+            if (comb_mac / comb_obs) > 0.5:
+                is_alt_major = True
+        
+        if is_alt_major:
+            # Flip to REF counting
+            row_mac_case = obs_case - mac_case
+            row_mac_ctrl = obs_ctrl - mac_ctrl
+        else:
+            row_mac_case = mac_case
+            row_mac_ctrl = mac_ctrl
+        
+        total_mac_case += row_mac_case
+        total_mac_ctrl += row_mac_ctrl
+        total_alleles_case += obs_case
+        total_alleles_ctrl += obs_ctrl
+        
+        # Geno Counts
+        # PLINK2 default cols: HOM_REF_CT HET_REF_ALT_CTS TWO_ALT_GENO_CTS MISSING_CT
+        g_homref_case = get_val(case_gcount, vid, 'HOM_REF_CT')
+        g_het_case = get_val(case_gcount, vid, 'HET_REF_ALT_CTS')
+        g_homalt_case = get_val(case_gcount, vid, 'TWO_ALT_GENO_CTS')
+        g_miss_case = get_val(case_gcount, vid, 'MISSING_CT')
+
+        g_homref_ctrl = get_val(ctrl_gcount, vid, 'HOM_REF_CT')
+        g_het_ctrl = get_val(ctrl_gcount, vid, 'HET_REF_ALT_CTS')
+        g_homalt_ctrl = get_val(ctrl_gcount, vid, 'TWO_ALT_GENO_CTS')
+        g_miss_ctrl = get_val(ctrl_gcount, vid, 'MISSING_CT')
+        
+        # Miss Rate
+        miss_rate_case = get_val(case_miss, vid, 'F_MISS')
+        miss_rate_ctrl = get_val(ctrl_miss, vid, 'F_MISS')
+        
+        # Tommo
+        tommo_key = f"{chrom}:{pos}:{ref}:{alt}"
+        val = tommo_dict.get(tommo_key, "NA")
+        if val != "NA":
+             tommo_af = f"{float(val):.6f}"
+        else:
+             tommo_af = "NA"
+        
+        rec = {
+            "SNPID": vid,
+            "Case_Geno": f"{int(g_homref_case)}/{int(g_het_case)}/{int(g_homalt_case)}/{int(g_miss_case)}",
+            "Ctrl_Geno": f"{int(g_homref_ctrl)}/{int(g_het_ctrl)}/{int(g_homalt_ctrl)}/{int(g_miss_ctrl)}",
+            "Case_AAF": f"{af_case:.6f}",
+            "Ctrl_AAF": f"{af_ctrl:.6f}",
+            "Case_MissRate": f"{miss_rate_case:.6f}",
+            "Ctrl_MissRate": f"{miss_rate_ctrl:.6f}",
+            "Tommo_AAF": tommo_af
+        }
+        variant_records.append(rec)
+
+
+    # 7. Write Log File
+    num_vcf_hits = len(variant_records)
+    with open(args.out_log, 'w') as f:
+        # Part 0: Header with Definitions
+        f.write("=== Metric Definitions & Calculation Details ===\n")
+        f.write("RVTest_NumVar: Number of variants used in the original RVTest result.\n")
+        f.write("VCF_Hit_NumVar: Number of variants found in the VCF matching the region/IDs.\n")
+        f.write("Total_MAC_Gene: Sum of Minor Allele Counts (Case + Control) for these variants.\n")
+        f.write("Total_MAC_Case: Sum of minor alleles in Case group.\n")
+        f.write("  Checking logic: If Pooled_AF(Alt) <= 0.5, counts Alt. If > 0.5, counts Ref.\n")
+        f.write("Total_MAC_Ctrl: Sum of minor alleles in Control group.\n")
+        f.write("Ratio_MAC_Case (MAC/(2*N)): Burden Ratio for Cases.\n")
+        f.write("  Formula: Total_MAC_Case / (2 * N_Case)\n")
+        f.write("  Where N_Case is the number of Case samples.\n")
+        f.write("Ratio_MAC_Ctrl (MAC/(2*N)): Burden Ratio for Controls.\n")
+        f.write("  Formula: Total_MAC_Ctrl / (2 * N_Ctrl)\n")
+        f.write("  Where N_Ctrl is the number of Control samples.\n")
+        f.write("Case_Geno/Ctrl_Geno: Observed genotype counts (Ref/Het/Alt/Miss).\n")
+        f.write("Case_AAF/Ctrl_AAF: Alternative Allele Frequency calculated by Plink.\n")
+        f.write("Tommo_AAF: Allele Frequency from ToMMo database (if available).\n")
+        f.write("================================================\n\n")
+
+        # Part 1: Gene Stats
+        f.write(f"=== Gene Summary: {args.gene} ===\n")
+        f.write(f"Assoc_File: {args.assoc_file}\n")
+        f.write(f"VCF_File: {args.vcf_file}\n")
+        f.write(f"Plink_Prefix: {args.plink_prefix}\n")
+        f.write(f"RVTest_NumVar: {rvtest_numvar}\n")
+        f.write(f"VCF_Hit_NumVar: {num_vcf_hits}\n")
+        f.write(f"Total_MAC_Gene: {int(total_mac_case + total_mac_ctrl)}\n")
+        f.write(f"Total_MAC_Case: {int(total_mac_case)}\n")
+        f.write(f"Total_MAC_Ctrl: {int(total_mac_ctrl)}\n")
+        
+        # Burden Frequency: MAC / Total Alleles in Group
+        # Total Alleles in Group = 2 * N_Samples
+        total_grp_alleles_case = 2 * n_case
+        total_grp_alleles_ctrl = 2 * n_ctrl
+        
+        ratio_case = total_mac_case / total_grp_alleles_case if total_grp_alleles_case > 0 else 0
+        ratio_ctrl = total_mac_ctrl / total_grp_alleles_ctrl if total_grp_alleles_ctrl > 0 else 0
+        
+        f.write(f"Ratio_MAC_Case (MAC/(2*N)): {ratio_case:.6f}\n")
+        f.write(f"Ratio_MAC_Ctrl (MAC/(2*N)): {ratio_ctrl:.6f}\n")
+        f.write("\n")
+        
+        # Part 2: Variant Details
+        f.write("=== Variant Details ===\n")
+        header = ["SNPID", "Case_Geno(Ref/Het/Alt/Miss)", "Ctrl_Geno(Ref/Het/Alt/Miss)", 
+                  "Case_AAF", "Ctrl_AAF", "Case_MissRate", "Ctrl_MissRate", "Tommo_AAF"]
+        f.write("\t".join(header) + "\n")
+        
+        for rec in variant_records:
+            row = [
+                rec["SNPID"],
+                rec["Case_Geno"],
+                rec["Ctrl_Geno"],
+                rec["Case_AAF"],
+                rec["Ctrl_AAF"],
+                rec["Case_MissRate"],
+                rec["Ctrl_MissRate"],
+                rec["Tommo_AAF"]
+            ]
+            f.write("\t".join(row) + "\n")
+
+    print(f"Log written to {args.out_log}")
+
+if __name__ == "__main__":
+    main()

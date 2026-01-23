@@ -262,7 +262,9 @@ def main():
     ax_man.set_title(clean_title, fontweight='bold', fontsize=13)
     
     # Legend - minimal and clean
-    ax_man.legend(loc='upper right', frameon=True, fontsize=9, facecolor='white', framealpha=0.9, edgecolor='#E0E0E0')
+    # Park legend outside the plot to avoid covering points
+    ax_man.legend(loc='upper left', bbox_to_anchor=(1.02, 1), borderaxespad=0, frameon=True,
+                  fontsize=9, facecolor='white', framealpha=0.9, edgecolor='#E0E0E0')
 
     # -------------------------------------------------------------------------
     # Annotate Top Genes
@@ -449,7 +451,8 @@ def main():
     ax_qq.set_ylabel(r'Observed $-\log_{10}(P)$')
     ax_qq.set_title("Q-Q Plot")
     
-    plt.tight_layout()
+    # Leave space on the right for the external legend
+    plt.tight_layout(rect=[0, 0, 0.86, 1])
     plt.savefig(f"{args.output_prefix}.png", dpi=300)
     plt.savefig(f"{args.output_prefix}.pdf", dpi=300)
     print(f"Saved plots to {args.output_prefix}.png/pdf")
