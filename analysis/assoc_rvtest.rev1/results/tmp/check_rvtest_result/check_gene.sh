@@ -1,11 +1,13 @@
 #!/bin/bash
 # Wrapper Script for Gene Detail Check (Smart & Robust Version)
-# Usage: ./check_gene.sh <Gene_Name> [Group_Name] [Mode]
+# Usage: ./check_gene.sh <Gene_Name> [Group_Name] [Mode] [Sample_Group]
 # Mode options: 'sensitivity' (default) or 'original'
+# Sample_Group options: 'case' (default) or 'control'
 
 GENE_NAME=$1
 GROUP_NAME=${2} # User provided group, or auto-set below
 MODE=${3:-"sensitivity"}
+SAMPLE_GROUP=${4:-"case"}
 
 # Default Group Logic depends on Mode
 if [ -z "$GROUP_NAME" ]; then
@@ -25,8 +27,9 @@ else
 fi
 
 if [ -z "$GENE_NAME" ]; then
-    echo "Usage: $0 <Gene_Name> [Group_Name] [Mode]"
+    echo "Usage: $0 <Gene_Name> [Group_Name] [Mode] [Sample_Group]"
     echo "  Mode: 'sensitivity' (default) or 'original'"
+    echo "  Sample_Group: 'case' (default) or 'control'"
     echo "  Default Group (sensitivity): impact_moderate_high.stat1_stat2"
     echo "  Default Group (original):    impact_moderate_high"
     exit 1
@@ -156,7 +159,8 @@ python ${SCRIPT_DIR}/check_gene_detail.py \
     --refflat-file "${REFFLAT_FILE}" \
     --plink2-path "${PLINK2_PATH}" \
     --out-dir "${TMP_DIR}" \
-    --out-log "${LOG_FILE}"
+    --out-log "${LOG_FILE}" \
+    --sample-group "${SAMPLE_GROUP}"
 
 echo ""
 echo "Done. Log saved to ${LOG_FILE}"

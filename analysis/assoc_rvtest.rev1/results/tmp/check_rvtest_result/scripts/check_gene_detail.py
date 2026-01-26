@@ -126,6 +126,11 @@ def main():
     parser.add_argument("--pheno-file", required=True)
     parser.add_argument("--refflat-file", required=False)
     
+    # Sample Detail Options
+    parser.add_argument("--sample-group", default="case", choices=["case", "control"], help="Sample group to analyze for details (default: case)")
+    parser.add_argument("--min-variant-count", type=int, default=1, help="Minimum variants to trigger alert (default: 1)")
+    parser.add_argument("--no-sample-details", action='store_true', help="Disable sample level detail calculation")
+
     args = parser.parse_args()
     
     # 1. Get Gene Info
@@ -243,6 +248,25 @@ def main():
         if 'pheno1' not in pheno_df.columns:
             print("[ERROR] Could not find 'pheno1' in pheno file.")
             sys.exit(1)
+            
+        # [Strict] Filter against FAM file to ensure sample existence
+        fam_file = args.plink_prefix + ".fam"
+        if os.path.exists(fam_file):
+            # FAM format: FID IID FAT MOT SEX PHENO
+            fam_df = pd.read_csv(fam_file, sep=r'\s+', header=None, usecols=[0, 1], names=['fid', 'iid'], dtype=str)
+            valid_samples = set(zip(fam_df['fid'], fam_df['iid']))
+            
+            # Ensure pheno cols are str
+            pheno_df['fid'] = pheno_df['fid'].astype(str)
+            pheno_df['iid'] = pheno_df['iid'].astype(str)
+            
+            # Filter
+            mask = pheno_df.apply(lambda r: (str(r['fid']), str(r['iid'])) in valid_samples, axis=1)
+            pheno_df = pheno_df[mask]
+            
+            print(f"[INFO] Pheno file filtered by FAM. Active Samples: {len(pheno_df)}")
+        else:
+             print(f"[WARNING] FAM file {fam_file} not found. Using raw pheno list.")
             
         # Case = 2, Control = 1
         case_file = os.path.join(args.out_dir, "cases.txt")
@@ -392,6 +416,7 @@ def main():
 
     # Prepare List of Records
     variant_records = []
+    target_allele_dict = {}
     
     total_mac_case = 0
     total_mac_ctrl = 0
@@ -457,9 +482,21 @@ def main():
             # Flip to REF counting
             row_mac_case = obs_case - mac_case
             row_mac_ctrl = obs_ctrl - mac_ctrl
+            target_allele_dict[vid] = ref
+            
+            # MAF is Ref Freq (1 - AltFreq)
+            maf_case_val = 1.0 - af_case
+            maf_ctrl_val = 1.0 - af_ctrl
+            minor_allele = ref
         else:
             row_mac_case = mac_case
             row_mac_ctrl = mac_ctrl
+            target_allele_dict[vid] = alt
+            
+            # MAF is Alt Freq
+            maf_case_val = af_case
+            maf_ctrl_val = af_ctrl
+            minor_allele = alt
         
         total_mac_case += row_mac_case
         total_mac_ctrl += row_mac_ctrl
@@ -506,10 +543,14 @@ def main():
         rec = {
             "SNPID": vid,
             "rsID": val_rsid,
+            "Is_Alt_Minor": "Yes" if not is_alt_major else "No",
+            "MinorAllele": minor_allele,
             "Impact": imp,
             "Effect": eff,
             "Case_Geno": f"{int(g_homref_case)}/{int(g_het_case)}/{int(g_homalt_case)}/{int(g_miss_case)}",
             "Ctrl_Geno": f"{int(g_homref_ctrl)}/{int(g_het_ctrl)}/{int(g_homalt_ctrl)}/{int(g_miss_ctrl)}",
+            "Case_MAF": f"{maf_case_val:.6f}",
+            "Ctrl_MAF": f"{maf_ctrl_val:.6f}",
             "Case_AAF": f"{af_case:.6f}",
             "Ctrl_AAF": f"{af_ctrl:.6f}",
             "Case_MissRate": f"{miss_rate_case:.6f}",
@@ -614,18 +655,22 @@ def main():
         
         # Part 2: Variant Details
         f.write("=== Variant Details ===\n")
-        header = ["SNPID", "rsID", "Impact", "Effect", "Case_Geno(Ref/Het/Alt/Miss)", "Ctrl_Geno(Ref/Het/Alt/Miss)", 
-                  "Case_AAF", "Ctrl_AAF", "ToMMo_AAF", "Case_MissRate", "Ctrl_MissRate"]
+        header = ["SNPID", "rsID", "Is_Alt_Minor", "MinorAllele", "Impact", "Effect", "Case_Geno(Ref/Het/Alt/Miss)", "Ctrl_Geno(Ref/Het/Alt/Miss)", 
+                  "Case_MAF", "Ctrl_MAF", "Case_AAF", "Ctrl_AAF", "ToMMo_AAF", "Case_MissRate", "Ctrl_MissRate"]
         f.write("\t".join(header) + "\n")
         
         for rec in variant_records:
             row = [
                 rec["SNPID"],
                 rec["rsID"],
+                rec["Is_Alt_Minor"],
+                rec["MinorAllele"],
                 rec["Impact"],
                 rec["Effect"],
                 rec["Case_Geno"],
                 rec["Ctrl_Geno"],
+                rec["Case_MAF"],
+                rec["Ctrl_MAF"],
                 rec["Case_AAF"],
                 rec["Ctrl_AAF"],
                 rec["ToMMo_AAF"],
@@ -635,6 +680,147 @@ def main():
             f.write("\t".join(row) + "\n")
 
     print(f"Log written to {args.out_log}")
+
+    # 8. Sample Details Module
+    if not args.no_sample_details:
+        print("\n=== Running Sample Level Analysis ===")
+        
+        # Determine target file and count
+        n_total_group = 0
+        if args.sample_group == 'case':
+            target_keep = case_file
+            n_total_group = n_case
+        else:
+            target_keep = ctrl_file
+            n_total_group = n_ctrl
+        
+        # Output prefix
+        sample_out_prefix = os.path.join(args.out_dir, "sample_stats")
+        
+        # Run Plink Export A
+        try:
+            cmd_export = (f"{args.plink2_path} --bfile {args.plink_prefix} "
+                          f"--extract {vcf_ids_file} "
+                          f"--keep {target_keep} "
+                          f"--export A "
+                          f"--out {sample_out_prefix} --threads 4 > /dev/null")
+            subprocess.check_call(cmd_export, shell=True, executable='/bin/bash', stderr=subprocess.DEVNULL)
+        except Exception:
+             print(f"[WARNING] Sample export failed (possibly no variants). Skipping sample details.")
+        
+        raw_file = sample_out_prefix + ".raw"
+        if os.path.exists(raw_file):
+            try:
+                df_raw = pd.read_csv(raw_file, sep='\t')
+                
+                # Columns: FID IID PAT MAT SEX PHENO ... SNPs...
+                if len(df_raw.columns) > 6:
+                    snp_cols = df_raw.columns[6:]
+                    
+                    results = []
+                    
+                    for _, row in df_raw.iterrows():
+                        fid = str(row['FID'])
+                        iid = str(row['IID'])
+                        
+                        carrier_list = []
+                        total_mac = 0
+                        
+                        for col in snp_cols:
+                            val = row[col]
+                            if pd.isna(val): continue
+                            
+                            # Parse Variant ID from column name
+                            # Plink2 raw headers are typically ID_ALLELE
+                            split_parts = col.rsplit('_', 1)
+                            if len(split_parts) < 2: 
+                                # Fallback if no underscore (unlikely for --export A)
+                                var_id_clean = col
+                                counted_allele = None
+                            else:
+                                var_id_clean = split_parts[0]
+                                counted_allele = split_parts[1]
+                            
+                            # Determine effective count of Minor Allele
+                            target = target_allele_dict.get(var_id_clean)
+                            final_val = 0
+                            
+                            # Determine Label (Genotype string)
+                            # val is ALWAYS the ALT count from PLINK (0, 1, 2)
+                            # 0 -> Ref/Ref, 1 -> Ref/Alt, 2 -> Alt/Alt
+                            # Assumptions: Diploid
+                            gt_label = "NA"
+                            if pd.isna(val):
+                                gt_label = "./."
+                            else:
+                                ival = int(val)
+                                if ival == 0: gt_label = "Ref/Ref"
+                                elif ival == 1: gt_label = "Ref/Alt"
+                                elif ival == 2: gt_label = "Alt/Alt"
+                                else: gt_label = f"Alt={ival}" # Startled
+                            
+                            if target and counted_allele:
+                                if counted_allele == target:
+                                    # Counting the minor allele
+                                    final_val = val
+                                else:
+                                    # Counting the major allele -> Invert
+                                    # 0 -> 2, 1 -> 1, 2 -> 0
+                                    final_val = 2 - val
+                            else:
+                                # Fallback: Assume the output counts the ALT/Minor allele
+                                final_val = val
+
+                            if final_val > 0:
+                                carrier_list.append(f"{var_id_clean}({gt_label})")
+                                total_mac += final_val
+                        
+                        results.append({
+                            "FID": fid,
+                            "IID": iid,
+                            "Variant_Count": len(carrier_list),
+                            "Total_MAC": int(total_mac),
+                            "Variants": ";".join(carrier_list)
+                        })
+                    
+                    df_res = pd.DataFrame(results)
+                    
+                    # Sort: Variant_Count Descending, Total_MAC Descending
+                    df_res = df_res.sort_values(by=["Variant_Count", "Total_MAC"], ascending=[False, False])
+
+                    # Save
+                    out_details = os.path.join(os.path.dirname(args.out_log), f"{args.gene}.{args.sample_group}.sample_details.tsv")
+                    df_res.to_csv(out_details, sep='\t', index=False)
+                    print(f"Sample details saved to: {out_details}")
+                    
+                    # Terminal Output
+                    df_high = df_res[df_res['Variant_Count'] >= args.min_variant_count]
+                    
+                    n_selected = len(df_high)
+                    pct = (n_selected / n_total_group * 100) if n_total_group > 0 else 0.0
+                    
+                    summary_msg = (
+                        f"\n======================================================\n"
+                        f"[Summary] Target Group: {args.sample_group.capitalize()}\n"
+                        f"[Summary] Total Samples in Group: {n_total_group}\n"
+                        f"[Summary] Samples with >= {args.min_variant_count} variants: {n_selected} ({pct:.2f}%)\n"
+                        f"======================================================"
+                    )
+                    
+                    print(summary_msg)
+                    
+                    if not df_high.empty:
+                        print(f"\n[ALERT] Detailed List (Sorted by Variant Count DESC):")
+                        print(df_high.to_string(index=False))
+                        # Print summary again at the bottom for visibility
+                        print(summary_msg)
+                    else:
+                        print(f"\nNo samples met the criteria.")
+                else:
+                    print("No variants found in exported sample data.")
+                    
+            except Exception as e:
+                print(f"[ERROR] processing sample details: {e}")
 
 if __name__ == "__main__":
     main()
