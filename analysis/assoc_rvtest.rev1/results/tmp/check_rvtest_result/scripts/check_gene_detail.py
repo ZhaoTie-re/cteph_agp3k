@@ -669,7 +669,7 @@ def main():
         f.write(f"SKAT-O_Pvalue: {skato_stats['Pvalue']}\n")
         f.write(f"SKAT-O_FDR: {skato_stats['FDR']}\n")
         f.write(f"SKAT-O_Rho: {skato_stats['rho']}\n")
-        f.write(f"Total_MAC_Gene: {int(total_mac_case + total_mac_ctrl)}\n")
+        f.write(f"Cumulative_MAC_Gene: {int(total_mac_case + total_mac_ctrl)}\n")
         
         # Burden Frequency Calculation (Moved up for Terminal Display)
         total_grp_alleles_case = 2 * n_case
@@ -698,9 +698,9 @@ def main():
         print(f"{Style.HEADER}│{Style.RESET}  Burden P-value : {burden_stats['Pvalue']} (FDR: {burden_stats['FDR']})")
         print(f"{Style.HEADER}│{Style.RESET}  SKAT-O P-value : {skato_stats['Pvalue']} (FDR: {skato_stats['FDR']})")
         print(f"{Style.HEADER}│{Style.RESET}  SKAT-O Rho     : {skato_stats['rho']}")
-        print(f"{Style.HEADER}│{Style.RESET}  Total MAC      : {int(total_mac_case + total_mac_ctrl)} (Case: {int(total_mac_case)}, Ctrl: {int(total_mac_ctrl)})")
-        print(f"{Style.HEADER}│{Style.RESET}  Ratio Case     : {ratio_case:.6f} (MAC / 2*N)")
-        print(f"{Style.HEADER}│{Style.RESET}  Ratio Ctrl     : {ratio_ctrl:.6f} (MAC / 2*N)")
+        print(f"{Style.HEADER}│{Style.RESET}  Cumulative MAC : {int(total_mac_case + total_mac_ctrl)} (Case: {int(total_mac_case)}, Ctrl: {int(total_mac_ctrl)})")
+        print(f"{Style.HEADER}│{Style.RESET}  Cumulative MAF Case: {ratio_case:.6f} (Cumul. MAC / 2*N)")
+        print(f"{Style.HEADER}│{Style.RESET}  Cumulative MAF Ctrl: {ratio_ctrl:.6f} (Cumul. MAC / 2*N)")
         print(f"{Style.HEADER}└────────────────────────────────────────{Style.RESET}")
 
         # Terminal Output for Variant Details (Restored & Professionalized & Full Info)
@@ -809,10 +809,10 @@ def main():
 
 
 
-        f.write(f"Total_MAC_Case: {int(total_mac_case)}\n")
-        f.write(f"Total_MAC_Ctrl: {int(total_mac_ctrl)}\n")
-        f.write(f"Ratio_MAC_Case (MAC/(2*N)): {ratio_case:.6f}\n")
-        f.write(f"Ratio_MAC_Ctrl (MAC/(2*N)): {ratio_ctrl:.6f}\n")
+        f.write(f"Cumulative_MAC_Case: {int(total_mac_case)}\n")
+        f.write(f"Cumulative_MAC_Ctrl: {int(total_mac_ctrl)}\n")
+        f.write(f"Cumulative_MAF_Case: {ratio_case:.6f}\n")
+        f.write(f"Cumulative_MAF_Ctrl: {ratio_ctrl:.6f}\n")
         f.write("\n")
 
         
@@ -932,14 +932,32 @@ def main():
                                     # Fallback: Assume the output counts the ALT/Minor allele
                                     final_val = val
 
-                                # Determine Label (Standard 0/0, 0/1, 1/1) based on ALT Count (val)
+                                # Determine Label (Standard 0/0, 0/1, 1/1)
                                 gt_label = "./."
                                 if not pd.isna(val):
                                     ival = int(val)
-                                    if ival == 0: gt_label = "0/0"
-                                    elif ival == 1: gt_label = "0/1"
-                                    elif ival == 2: gt_label = "1/1"
-                                    else: gt_label = f"?({ival})"
+                                    
+                                    # Determine if we are counting REF or ALT based on ID
+                                    is_counting_ref = False
+                                    parts = var_id_clean.split(':')
+                                    if len(parts) >= 4 and counted_allele:
+                                        ref_a = parts[2]
+                                        # If Plink counted the REF allele
+                                        if counted_allele == ref_a:
+                                            is_counting_ref = True
+                                    
+                                    if is_counting_ref:
+                                        # val is count of REF copies
+                                        if ival == 2: gt_label = "0/0"
+                                        elif ival == 1: gt_label = "0/1"
+                                        elif ival == 0: gt_label = "1/1"
+                                        else: gt_label = f"?({ival})"
+                                    else:
+                                        # val is count of ALT copies (default)
+                                        if ival == 0: gt_label = "0/0"
+                                        elif ival == 1: gt_label = "0/1"
+                                        elif ival == 2: gt_label = "1/1"
+                                        else: gt_label = f"?({ival})"
 
                                 if final_val > 0:
                                     carrier_list.append(f"{var_id_clean}({gt_label})")
