@@ -259,12 +259,13 @@ def main():
         except:
             pass
 
-    ax_man.set_title(clean_title, fontweight='bold', fontsize=13)
+    # Increase title padding to make room for legend
+    ax_man.set_title(clean_title, fontweight='bold', fontsize=13, pad=30)
     
-    # Legend - minimal and clean
-    # Park legend outside the plot to avoid covering points
-    ax_man.legend(loc='upper left', bbox_to_anchor=(1.02, 1), borderaxespad=0, frameon=True,
-                  fontsize=9, facecolor='white', framealpha=0.9, edgecolor='#E0E0E0')
+    # Legend - placed above the plot area but below the title
+    # Using lower center at y=1.0 puts it just above the top spine
+    ax_man.legend(loc='lower center', bbox_to_anchor=(0.5, 1.0), ncol=2, 
+                  borderaxespad=0, frameon=False, fontsize=9)
 
     # -------------------------------------------------------------------------
     # Annotate Top Genes
@@ -451,8 +452,7 @@ def main():
     ax_qq.set_ylabel(r'Observed $-\log_{10}(P)$')
     ax_qq.set_title("Q-Q Plot")
     
-    # Leave space on the right for the external legend
-    plt.tight_layout(rect=[0, 0, 0.86, 1])
+    plt.tight_layout()
     plt.savefig(f"{args.output_prefix}.png", dpi=300)
     plt.savefig(f"{args.output_prefix}.pdf", dpi=300)
     print(f"Saved plots to {args.output_prefix}.png/pdf")

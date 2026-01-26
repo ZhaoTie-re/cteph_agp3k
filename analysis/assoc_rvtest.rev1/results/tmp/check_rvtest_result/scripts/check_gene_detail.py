@@ -519,6 +519,41 @@ def main():
         variant_records.append(rec)
 
 
+    # Sort variant_records
+    def variant_sort_key(record):
+        # Format: chr:pos:ref:alt (e.g., chr17:80343161:G:A or 17:80343161:G:A)
+        # Note: Some VCFs use 'chr1', others '1'. Logic should handle both.
+        snpid = record["SNPID"]
+        parts = snpid.split(':')
+        if len(parts) < 2:
+            return (99, 0) # Fallback
+            
+        chrom_str = parts[0].replace('chr', '')
+        pos_str = parts[1]
+        
+        # Chromosome Order
+        if chrom_str.isdigit():
+            c_val = int(chrom_str)
+        elif chrom_str == 'X':
+            c_val = 23
+        elif chrom_str == 'Y':
+            c_val = 24
+        elif chrom_str == 'M' or chrom_str == 'MT':
+            c_val = 25
+        else:
+            c_val = 99
+            
+        # Position
+        try:
+            p_val = int(pos_str)
+        except:
+            p_val = 0
+            
+        return (c_val, p_val)
+
+    variant_records.sort(key=variant_sort_key)
+
+
     # 7. Write Log File
     num_vcf_hits = len(variant_records)
     with open(args.out_log, 'w') as f:
