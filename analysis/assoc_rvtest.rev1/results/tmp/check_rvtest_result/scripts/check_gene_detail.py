@@ -160,6 +160,7 @@ def main():
     parser.add_argument("--tommo-vcf", required=True)
     parser.add_argument("--out-dir", required=True)
     parser.add_argument("--out-log", required=True)
+    parser.add_argument("--group-name", required=False, default="", help="Analysis group suffix for file naming")
     parser.add_argument("--plink2-path", required=True)
     parser.add_argument("--pheno-file", required=True)
     parser.add_argument("--refflat-file", required=False)
@@ -939,7 +940,12 @@ def main():
                         df_res = df_res.sort_values(by=["Variant_Count", "Total_MAC"], ascending=[False, False])
 
                         # Save
-                        out_details = os.path.join(os.path.dirname(args.out_log), f"{args.gene}.{g_name}.sample_details.tsv")
+                        if args.group_name:
+                            fn_middle = f"{args.group_name}.{g_name}"
+                        else:
+                            fn_middle = g_name
+                            
+                        out_details = os.path.join(os.path.dirname(args.out_log), f"{args.gene}.{fn_middle}.sample_details.tsv")
                         df_res.to_csv(out_details, sep='\t', index=False)
                         print_success(f"Sample details saved to: {out_details}")
                         
