@@ -8,14 +8,52 @@ import shutil
 import glob
 import gzip
 
+# Terminal Styling
+class Style:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    WARNING = '\033[93m'
+    FAIL = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+    RESET = ENDC
+
+def print_header(msg):
+    print(f"{Style.BOLD}{Style.HEADER}{msg}{Style.ENDC}")
+
+def print_info(msg):
+    print(f"{Style.BLUE}[INFO] {msg}{Style.ENDC}")
+
+def print_success(msg):
+    print(f"{Style.GREEN}[SUCCESS] {msg}{Style.ENDC}")
+
+def print_warning(msg):
+    print(f"{Style.WARNING}[WARNING] {msg}{Style.ENDC}")
+
+def print_error(msg):
+    print(f"{Style.FAIL}[ERROR] {msg}{Style.ENDC}")
+
+def check_dependencies(tools):
+    missing = []
+    for tool in tools:
+        if shutil.which(tool) is None:
+            missing.append(tool)
+    if missing:
+        print_error(f"Missing required tools: {', '.join(missing)}")
+        sys.exit(1)
+
 def run_cmd(cmd, verbose=False):
     if verbose:
         print(f"[CMD] {cmd}")
     try:
         subprocess.check_call(cmd, shell=True, executable='/bin/bash')
-    except subprocess.CalledProcessError as e:
-        print(f"[ERROR] Command failed: {cmd}")
+    except subprocess.CalledProcessError:
+        print_error(f"Command failed: {cmd}")
         sys.exit(1)
+
 
 def parse_ranges(range_str):
     parts = range_str.split(',')
@@ -127,11 +165,18 @@ def main():
     parser.add_argument("--refflat-file", required=False)
     
     # Sample Detail Options
-    parser.add_argument("--sample-group", default="case", choices=["case", "control"], help="Sample group to analyze for details (default: case)")
+    parser.add_argument("--sample-group", default="both", choices=["case", "control", "both"], help="Sample group to analyze for details (default: both)")
     parser.add_argument("--min-variant-count", type=int, default=1, help="Minimum variants to trigger alert (default: 1)")
     parser.add_argument("--no-sample-details", action='store_true', help="Disable sample level detail calculation")
 
     args = parser.parse_args()
+    
+    # 0. Robustness Checks
+    check_dependencies(['bcftools'])
+    # plink2 path is passed as arg, check existence
+    if not os.path.exists(args.plink2_path):
+        print_error(f"Plink2 executable not found at: {args.plink2_path}")
+        sys.exit(1)
     
     # 1. Get Gene Info
     gene_range_str = None
@@ -139,7 +184,7 @@ def main():
     
     # Try getting info from Refflat first if provided
     if args.refflat_file:
-        print(f"Reading RefFlat: {args.refflat_file}")
+        print_info(f"Reading RefFlat: {args.refflat_file}")
         gene_range_str = get_gene_range_from_refflat(args.refflat_file, args.gene)
         
     # Get NumVar from Assoc file (and Range if refFlat failed or not provided)
@@ -149,22 +194,22 @@ def main():
          
     if not gene_range_str:
         if assoc_range:
-            print("Using range from Assoc File.")
+            print_info("Using range from Assoc File.")
             gene_range_str = assoc_range
         else:
-             print(f"[ERROR] Gene {args.gene} not found in assoc file and refFlat invalid.")
+             print_error(f"Gene {args.gene} not found in assoc file and refFlat invalid.")
              sys.exit(1)
     else:
-         print("Using range from RefFlat.")
+         print_info("Using range from RefFlat.")
 
     # 2. Parse Ranges
     valid_ranges = parse_ranges(gene_range_str)
     if not valid_ranges:
-        print("[ERROR] No valid ranges found for gene.")
+        print_error("No valid ranges found for gene.")
         sys.exit(1)
     
     # 3. Extract IDs from VCF using regions
-    print("Extracting variants from VCF...")
+    print_info("Extracting variants from VCF...")
     
     # Construct region string for -r (format: chr:start-end,chr:start-end)
     region_strs = []
@@ -227,7 +272,7 @@ def main():
                     if vid not in vcf_info_dict: vcf_info_dict[vid] = [".", "."]
                     vcf_info_dict[vid][idx_in_dict] = val
         else:
-             print(f"[WARNING] Could not extract {out_str_key} (tried: {candidates})")
+             print_warning(f"Could not extract {out_str_key} (tried: {candidates})")
 
     # 1. Try IMPACT (upper or lower)
     extract_field_robust(["%INFO/IMPACT", "%INFO/impact"], "impact", 0)
@@ -236,7 +281,7 @@ def main():
     extract_field_robust(["%INFO/EFFECT", "%INFO/effect"], "effect", 1)
 
     # 4. Prepare Case/Control Lists from Pheno File
-    print("Preparing sample lists...")
+    print_info("Preparing sample lists...")
     try:
         # Expected cols: fid, iid, ..., pheno1
         # Try tab first
@@ -246,7 +291,7 @@ def main():
              pheno_df = pd.read_csv(args.pheno_file, sep=r'\s+', engine='python')
         
         if 'pheno1' not in pheno_df.columns:
-            print("[ERROR] Could not find 'pheno1' in pheno file.")
+            print_error("Could not find 'pheno1' in pheno file.")
             sys.exit(1)
             
         # [Strict] Filter against FAM file to ensure sample existence
@@ -264,9 +309,9 @@ def main():
             mask = pheno_df.apply(lambda r: (str(r['fid']), str(r['iid'])) in valid_samples, axis=1)
             pheno_df = pheno_df[mask]
             
-            print(f"[INFO] Pheno file filtered by FAM. Active Samples: {len(pheno_df)}")
+            print_info(f"Pheno file filtered by FAM. Active Samples: {len(pheno_df)}")
         else:
-             print(f"[WARNING] FAM file {fam_file} not found. Using raw pheno list.")
+             print_warning(f"FAM file {fam_file} not found. Using raw pheno list.")
             
         # Case = 2, Control = 1
         case_file = os.path.join(args.out_dir, "cases.txt")
@@ -278,14 +323,14 @@ def main():
         
         n_case = len(pheno_df[pheno_df['pheno1'] == 2])
         n_ctrl = len(pheno_df[pheno_df['pheno1'] == 1])
-        print(f"Cases: {n_case}, Controls: {n_ctrl}")
+        print_info(f"Analysis Groups -> Cases: {n_case}, Controls: {n_ctrl}")
         
     except Exception as e:
-        print(f"[ERROR] Processing pheno file: {e}")
+        print_error(f"Processing pheno file: {e}")
         sys.exit(1)
     
     # Run Plink for Cases
-    print("Running PLINK for Cases...")
+    print_info("Running PLINK for Cases...")
     prefix_case = os.path.join(args.out_dir, "stats_case")
     # Output: .afreq (AAF), .gcount (Genocounts), .vmiss (Missing)
     # Removed 'mac' from cols, PLINK2 calculates freq/obs_ct
@@ -299,7 +344,7 @@ def main():
     run_cmd(cmd_mk_case)
     
     # Run Plink for Ctrls
-    print("Running PLINK for Controls...")
+    print_info("Running PLINK for Controls...")
     prefix_ctrl = os.path.join(args.out_dir, "stats_ctrl")
     cmd_mk_ctrl = (f"{args.plink2_path} --bfile {args.plink_prefix} "
                    f"--extract {vcf_ids_file} "
@@ -311,7 +356,7 @@ def main():
     run_cmd(cmd_mk_ctrl)
     
     # 5. Extract Tommo Frequencies
-    print("Extracting Tommo frequencies...")
+    print_info("Extracting Tommo frequencies...")
     tommo_out = os.path.join(args.out_dir, "tommo_af.txt")
     tommo_dict = {}
     
@@ -372,9 +417,9 @@ def main():
                         
                         tommo_dict[key] = (row['AF'], rsid_val)
             except Exception as e:
-                print(f"[WARNING] Failed to read Tommo output: {e}")
+                print_warning(f"Failed to read Tommo output: {e}")
     else:
-        print("[WARNING] Tommo VCF not found or not provided.")
+        print_warning("Tommo VCF not found or not provided.")
 
     # 6. Aggregate Data and Write Log
     
@@ -399,7 +444,7 @@ def main():
             df.columns = df.columns.str.strip()
             
     except Exception as e:
-        print(f"[ERROR] Failed to load PLINK stats: {e}")
+        print_error(f"Failed to load PLINK stats: {e}")
         # If files empty (no variants found in plink), handle gracefully
         case_freq = pd.DataFrame()
         ctrl_freq = pd.DataFrame()
@@ -593,32 +638,10 @@ def main():
         return (c_val, p_val)
 
     variant_records.sort(key=variant_sort_key)
-
-
+    
     # 7. Write Log File
     num_vcf_hits = len(variant_records)
     with open(args.out_log, 'w') as f:
-        # Part 0: Header with Definitions
-        f.write("=== Metric Definitions & Calculation Details ===\n")
-        f.write("RVTest_NumVar: Number of variants used in the original RVTest result.\n")
-        f.write("VCF_Hit_NumVar: Number of variants found in the VCF matching the region/IDs.\n")
-        f.write("Total_MAC_Gene: Sum of Minor Allele Counts (Case + Control) for these variants.\n")
-        f.write("Total_MAC_Case: Sum of minor alleles in Case group.\n")
-        f.write("  Checking logic: If Pooled_AF(Alt) <= 0.5, counts Alt. If > 0.5, counts Ref.\n")
-        f.write("Total_MAC_Ctrl: Sum of minor alleles in Control group.\n")
-        f.write("Ratio_MAC_Case (MAC/(2*N)): Burden Ratio for Cases.\n")
-        f.write("  Formula: Total_MAC_Case / (2 * N_Case)\n")
-        f.write("  Where N_Case is the number of Case samples.\n")
-        f.write("Ratio_MAC_Ctrl (MAC/(2*N)): Burden Ratio for Controls.\n")
-        f.write("  Formula: Total_MAC_Ctrl / (2 * N_Ctrl)\n")
-        f.write("  Where N_Ctrl is the number of Control samples.\n")
-        f.write("Case_Geno/Ctrl_Geno: Observed genotype counts (Ref/Het/Alt/Miss).\n")
-        f.write("Case_AAF/Ctrl_AAF: Alternative Allele Frequency calculated by Plink.\n")
-        f.write("Tommo_AAF: Allele Frequency from ToMMo database (if available).\n")
-        f.write("rsID: dbSNP ID from ToMMo VCF.\n")
-        f.write("Impact/Effect: Variant annotation from VCF (INFO/IMPACT, INFO/EFFECT).\n")
-        f.write("================================================\n\n")
-
         # Get Additional Stats
         burden_stats = get_extended_stats(args.burden_file, args.gene, ['Pvalue', 'FDR'])
         skato_stats = get_extended_stats(args.skato_file, args.gene, ['Pvalue', 'FDR', 'rho'])
@@ -638,25 +661,152 @@ def main():
         f.write(f"SKAT-O_FDR: {skato_stats['FDR']}\n")
         f.write(f"SKAT-O_Rho: {skato_stats['rho']}\n")
         f.write(f"Total_MAC_Gene: {int(total_mac_case + total_mac_ctrl)}\n")
-        f.write(f"Total_MAC_Case: {int(total_mac_case)}\n")
-        f.write(f"Total_MAC_Ctrl: {int(total_mac_ctrl)}\n")
         
-        # Burden Frequency: MAC / Total Alleles in Group
-        # Total Alleles in Group = 2 * N_Samples
+        # Burden Frequency Calculation (Moved up for Terminal Display)
         total_grp_alleles_case = 2 * n_case
         total_grp_alleles_ctrl = 2 * n_ctrl
-        
         ratio_case = total_mac_case / total_grp_alleles_case if total_grp_alleles_case > 0 else 0
         ratio_ctrl = total_mac_ctrl / total_grp_alleles_ctrl if total_grp_alleles_ctrl > 0 else 0
-        
+
+        # Check if Is_Alt_Minor is always "Yes" (Needed for Terminal & Log)
+        all_alt_minor = all(r['Is_Alt_Minor'] == "Yes" for r in variant_records)
+
+        # Terminal Output for Gene Stats (Stylish & Complete)
+        print(f"\n{Style.HEADER}┌── Gene Analysis: {Style.BOLD}{args.gene}{Style.RESET} {Style.HEADER}─────────────────{Style.RESET}")
+        print(f"{Style.HEADER}│{Style.RESET}  RVTest NumVar  : {rvtest_numvar}")
+        print(f"{Style.HEADER}│{Style.RESET}  VCF Hit NumVar : {num_vcf_hits}")
+        print(f"{Style.HEADER}│{Style.RESET}  Burden P-value : {burden_stats['Pvalue']} (FDR: {burden_stats['FDR']})")
+        print(f"{Style.HEADER}│{Style.RESET}  SKAT-O P-value : {skato_stats['Pvalue']} (FDR: {skato_stats['FDR']})")
+        print(f"{Style.HEADER}│{Style.RESET}  SKAT-O Rho     : {skato_stats['rho']}")
+        print(f"{Style.HEADER}│{Style.RESET}  Total MAC      : {int(total_mac_case + total_mac_ctrl)} (Case: {int(total_mac_case)}, Ctrl: {int(total_mac_ctrl)})")
+        print(f"{Style.HEADER}│{Style.RESET}  Ratio Case     : {ratio_case:.6f}")
+        print(f"{Style.HEADER}│{Style.RESET}  Ratio Ctrl     : {ratio_ctrl:.6f}")
+        print(f"{Style.HEADER}└────────────────────────────────────────{Style.RESET}")
+
+        # Terminal Output for Variant Details (Restored & Professionalized & Full Info)
+        if not args.no_sample_details: # Using this flag to control verbosity generally, or just print it.
+            print(f"\n{Style.BOLD}Detailed Variant List ({num_vcf_hits}):{Style.RESET}")
+            
+            # 1. Define Headers (Same as Log)
+            header_cols = ["SNPID", "rsID", "Is_Alt_Minor", "Impact", "Effect", "Case_Geno(Ref/Het/Alt/Miss)", "Ctrl_Geno(Ref/Het/Alt/Miss)"]
+            if not all_alt_minor:
+                 header_cols.extend(["Case_MAF", "Ctrl_MAF"])
+            header_cols.extend(["Case_AAF", "Ctrl_AAF", "ToMMo_AAF", "Case_MissRate", "Ctrl_MissRate"])
+            
+            table_data = [header_cols]
+            
+            for rec in variant_records:
+                # Colorize Impact
+                imp = rec["Impact"]
+                if "HIGH" in imp: imp = f"{Style.FAIL}{imp}{Style.RESET}"
+                elif "MODERATE" in imp: imp = f"{Style.WARNING}{imp}{Style.RESET}"
+                
+                # Colors for MAF (if exists)
+                c_maf = rec.get("Case_MAF", "NA")
+                if c_maf != "NA":
+                    try:
+                        if float(c_maf) > 0.01: c_maf = f"{Style.FAIL}{c_maf}{Style.RESET}"
+                    except: pass
+
+                # Genotypes: Full Format with Color
+                def fmt_geno_full(g_str):
+                    parts = g_str.split('/')
+                    if len(parts) >= 3:
+                        # Logic to handle varying parts length if Miss is present or not
+                        # Assuming Ref/Het/Alt/Miss from log logic
+                        # But wait, rec["Case_Geno"] holds the string we put in log logic.
+                        # Let's check log logic loop above. 
+                        # Log logic just writes rec["Case_Geno"].
+                        # We need to see how rec["Case_Geno"] was constructed.
+                        # It was constructed lines 573-590 approx.
+                        # Let's assume standard logic: Ref/Het/Alt/Miss
+                        r_val, h_val, a_val = parts[0], parts[1], parts[2]
+                        
+                        # Highlighting
+                        if int(h_val) > 0: h_val = f"{Style.WARNING}{h_val}{Style.RESET}"
+                        if int(a_val) > 0: a_val = f"{Style.FAIL}{a_val}{Style.RESET}"
+                        
+                        ret = f"{r_val}/{h_val}/{a_val}"
+                        if len(parts) > 3:
+                            ret += f"/{parts[3]}"
+                        return ret
+                    return g_str
+
+                c_geno = fmt_geno_full(rec["Case_Geno"])
+                n_geno = fmt_geno_full(rec["Ctrl_Geno"])
+                
+                # Build Row
+                row = [
+                    rec["SNPID"],
+                    rec["rsID"],
+                    rec["Is_Alt_Minor"],
+                    imp,
+                    rec["Effect"],
+                    c_geno,
+                    n_geno
+                ]
+                
+                if not all_alt_minor:
+                    row.extend([c_maf, rec["Ctrl_MAF"]])
+                
+                row.extend([
+                    rec["Case_AAF"],
+                    rec["Ctrl_AAF"],
+                    rec["ToMMo_AAF"],
+                    rec["Case_MissRate"],
+                    rec["Ctrl_MissRate"]
+                ])
+                
+                table_data.append(row)
+            
+            # 2. Calculate Widths (handling ANSI)
+            # We need regex to strip ansi
+            import re
+            def get_visible_len(s):
+                ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+                return len(ansi_escape.sub('', str(s)))
+
+            col_widths = [0] * len(header_cols)
+            for row in table_data:
+                for i, val in enumerate(row):
+                    w = get_visible_len(val)
+                    if w > col_widths[i]: col_widths[i] = w
+            
+            # 3. Print Table
+            for i, row in enumerate(table_data):
+                line_parts = []
+                for j, val in enumerate(row):
+                    # Left Align
+                    v_len = get_visible_len(val)
+                    padding = " " * (col_widths[j] - v_len + 2) # +2 padding
+                    line_parts.append(str(val) + padding)
+                
+                line_str = "".join(line_parts)
+                if i == 0:
+                    print(f"  {Style.UNDERLINE}{line_str}{Style.RESET}")
+                else:
+                    print(f"  {line_str}")
+
+
+
+        f.write(f"Total_MAC_Case: {int(total_mac_case)}\n")
+        f.write(f"Total_MAC_Ctrl: {int(total_mac_ctrl)}\n")
         f.write(f"Ratio_MAC_Case (MAC/(2*N)): {ratio_case:.6f}\n")
         f.write(f"Ratio_MAC_Ctrl (MAC/(2*N)): {ratio_ctrl:.6f}\n")
         f.write("\n")
+
         
         # Part 2: Variant Details
+        # Check if Is_Alt_Minor is always "Yes"
+        all_alt_minor = all(r['Is_Alt_Minor'] == "Yes" for r in variant_records)
+
         f.write("=== Variant Details ===\n")
-        header = ["SNPID", "rsID", "Is_Alt_Minor", "MinorAllele", "Impact", "Effect", "Case_Geno(Ref/Het/Alt/Miss)", "Ctrl_Geno(Ref/Het/Alt/Miss)", 
-                  "Case_MAF", "Ctrl_MAF", "Case_AAF", "Ctrl_AAF", "ToMMo_AAF", "Case_MissRate", "Ctrl_MissRate"]
+        header = ["SNPID", "rsID", "Is_Alt_Minor", "Impact", "Effect", "Case_Geno(Ref/Het/Alt/Miss)", "Ctrl_Geno(Ref/Het/Alt/Miss)"]
+        
+        if not all_alt_minor:
+             header.extend(["Case_MAF", "Ctrl_MAF"])
+             
+        header.extend(["Case_AAF", "Ctrl_AAF", "ToMMo_AAF", "Case_MissRate", "Ctrl_MissRate"])
         f.write("\t".join(header) + "\n")
         
         for rec in variant_records:
@@ -664,163 +814,208 @@ def main():
                 rec["SNPID"],
                 rec["rsID"],
                 rec["Is_Alt_Minor"],
-                rec["MinorAllele"],
                 rec["Impact"],
                 rec["Effect"],
                 rec["Case_Geno"],
-                rec["Ctrl_Geno"],
-                rec["Case_MAF"],
-                rec["Ctrl_MAF"],
+                rec["Ctrl_Geno"]
+            ]
+            
+            if not all_alt_minor:
+                row.extend([rec["Case_MAF"], rec["Ctrl_MAF"]])
+            
+            row.extend([
                 rec["Case_AAF"],
                 rec["Ctrl_AAF"],
                 rec["ToMMo_AAF"],
                 rec["Case_MissRate"],
                 rec["Ctrl_MissRate"]
-            ]
+            ])
+            
             f.write("\t".join(row) + "\n")
-
-    print(f"Log written to {args.out_log}")
 
     # 8. Sample Details Module
     if not args.no_sample_details:
-        print("\n=== Running Sample Level Analysis ===")
+        print(f"\n{Style.BOLD}================ Sample Level Analysis ================{Style.RESET}")
         
         # Determine target file and count
-        n_total_group = 0
-        if args.sample_group == 'case':
-            target_keep = case_file
-            n_total_group = n_case
-        else:
-            target_keep = ctrl_file
-            n_total_group = n_ctrl
+        targets = []
+        if args.sample_group == 'both':
+            targets.append(('case', case_file, n_case))
+            targets.append(('control', ctrl_file, n_ctrl))
+        elif args.sample_group == 'case':
+            targets.append(('case', case_file, n_case))
+        elif args.sample_group == 'control':
+            targets.append(('control', ctrl_file, n_ctrl))
         
-        # Output prefix
-        sample_out_prefix = os.path.join(args.out_dir, "sample_stats")
-        
-        # Run Plink Export A
-        try:
-            cmd_export = (f"{args.plink2_path} --bfile {args.plink_prefix} "
-                          f"--extract {vcf_ids_file} "
-                          f"--keep {target_keep} "
-                          f"--export A "
-                          f"--out {sample_out_prefix} --threads 4 > /dev/null")
-            subprocess.check_call(cmd_export, shell=True, executable='/bin/bash', stderr=subprocess.DEVNULL)
-        except Exception:
-             print(f"[WARNING] Sample export failed (possibly no variants). Skipping sample details.")
-        
-        raw_file = sample_out_prefix + ".raw"
-        if os.path.exists(raw_file):
+        for (g_name, g_file, g_n) in targets:
+            # Output prefix
+            sample_out_prefix = os.path.join(args.out_dir, f"sample_stats_{g_name}")
+            
+            # Run Plink Export A
             try:
-                df_raw = pd.read_csv(raw_file, sep='\t')
-                
-                # Columns: FID IID PAT MAT SEX PHENO ... SNPs...
-                if len(df_raw.columns) > 6:
-                    snp_cols = df_raw.columns[6:]
+                cmd_export = (f"{args.plink2_path} --bfile {args.plink_prefix} "
+                              f"--extract {vcf_ids_file} "
+                              f"--keep {g_file} "
+                              f"--export A "
+                              f"--out {sample_out_prefix} --threads 4 > /dev/null")
+                subprocess.check_call(cmd_export, shell=True, executable='/bin/bash', stderr=subprocess.DEVNULL)
+            except Exception:
+                 print_warning(f"Sample export failed for {g_name} (possibly no variants). Skipping.")
+                 continue
+            
+            raw_file = sample_out_prefix + ".raw"
+            if os.path.exists(raw_file):
+                try:
+                    df_raw = pd.read_csv(raw_file, sep='\t')
                     
-                    results = []
-                    
-                    for _, row in df_raw.iterrows():
-                        fid = str(row['FID'])
-                        iid = str(row['IID'])
+                    # Columns: FID IID PAT MAT SEX PHENO ... SNPs...
+                    if len(df_raw.columns) > 6:
+                        snp_cols = df_raw.columns[6:]
                         
-                        carrier_list = []
-                        total_mac = 0
+                        results = []
                         
-                        for col in snp_cols:
-                            val = row[col]
-                            if pd.isna(val): continue
+                        for _, row in df_raw.iterrows():
+                            fid = str(row['FID'])
+                            iid = str(row['IID'])
                             
-                            # Parse Variant ID from column name
-                            # Plink2 raw headers are typically ID_ALLELE
-                            split_parts = col.rsplit('_', 1)
-                            if len(split_parts) < 2: 
-                                # Fallback if no underscore (unlikely for --export A)
-                                var_id_clean = col
-                                counted_allele = None
-                            else:
-                                var_id_clean = split_parts[0]
-                                counted_allele = split_parts[1]
+                            carrier_list = []
+                            total_mac = 0
                             
-                            # Determine effective count of Minor Allele
-                            target = target_allele_dict.get(var_id_clean)
-                            final_val = 0
-                            
-                            # Determine Label (Genotype string)
-                            # val is ALWAYS the ALT count from PLINK (0, 1, 2)
-                            # 0 -> Ref/Ref, 1 -> Ref/Alt, 2 -> Alt/Alt
-                            # Assumptions: Diploid
-                            gt_label = "NA"
-                            if pd.isna(val):
-                                gt_label = "./."
-                            else:
-                                ival = int(val)
-                                if ival == 0: gt_label = "Ref/Ref"
-                                elif ival == 1: gt_label = "Ref/Alt"
-                                elif ival == 2: gt_label = "Alt/Alt"
-                                else: gt_label = f"Alt={ival}" # Startled
-                            
-                            if target and counted_allele:
-                                if counted_allele == target:
-                                    # Counting the minor allele
-                                    final_val = val
+                            for col in snp_cols:
+                                val = row[col]
+                                if pd.isna(val): continue
+                                
+                                # Parse Variant ID from column name
+                                # Plink2 raw headers are typically ID_ALLELE
+                                split_parts = col.rsplit('_', 1)
+                                if len(split_parts) < 2: 
+                                    # Fallback if no underscore (unlikely for --export A)
+                                    var_id_clean = col
+                                    counted_allele = None
                                 else:
-                                    # Counting the major allele -> Invert
-                                    # 0 -> 2, 1 -> 1, 2 -> 0
-                                    final_val = 2 - val
-                            else:
-                                # Fallback: Assume the output counts the ALT/Minor allele
-                                final_val = val
+                                    var_id_clean = split_parts[0]
+                                    counted_allele = split_parts[1]
+                                
+                                # Determine effective count of Minor Allele
+                                target = target_allele_dict.get(var_id_clean)
+                                final_val = 0
+                                
+                                # Logic to handle Major/Minor Inversion
+                                if target and counted_allele:
+                                    if counted_allele == target:
+                                        # Counting the minor allele
+                                        final_val = val
+                                    else:
+                                        # Counting the major allele -> Invert (0->2, 1->1, 2->0)
+                                        final_val = 2 - val 
+                                else:
+                                    # Fallback: Assume the output counts the ALT/Minor allele
+                                    final_val = val
 
-                            if final_val > 0:
-                                carrier_list.append(f"{var_id_clean}({gt_label})")
-                                total_mac += final_val
+                                # Determine Label (Standard 0/0, 0/1, 1/1) based on ALT Count (val)
+                                gt_label = "./."
+                                if not pd.isna(val):
+                                    ival = int(val)
+                                    if ival == 0: gt_label = "0/0"
+                                    elif ival == 1: gt_label = "0/1"
+                                    elif ival == 2: gt_label = "1/1"
+                                    else: gt_label = f"?({ival})"
+
+                                if final_val > 0:
+                                    carrier_list.append(f"{var_id_clean}({gt_label})")
+                                    total_mac += final_val
+                            
+                            results.append({
+                                "FID": fid,
+                                "IID": iid,
+                                "Variant_Count": len(carrier_list),
+                                "Total_MAC": int(total_mac),
+                                "Variants": ";".join(carrier_list)
+                            })
                         
-                        results.append({
-                            "FID": fid,
-                            "IID": iid,
-                            "Variant_Count": len(carrier_list),
-                            "Total_MAC": int(total_mac),
-                            "Variants": ";".join(carrier_list)
-                        })
-                    
-                    df_res = pd.DataFrame(results)
-                    
-                    # Sort: Variant_Count Descending, Total_MAC Descending
-                    df_res = df_res.sort_values(by=["Variant_Count", "Total_MAC"], ascending=[False, False])
+                        df_res = pd.DataFrame(results)
+                        
+                        # Sort: Variant_Count Descending, Total_MAC Descending
+                        df_res = df_res.sort_values(by=["Variant_Count", "Total_MAC"], ascending=[False, False])
 
-                    # Save
-                    out_details = os.path.join(os.path.dirname(args.out_log), f"{args.gene}.{args.sample_group}.sample_details.tsv")
-                    df_res.to_csv(out_details, sep='\t', index=False)
-                    print(f"Sample details saved to: {out_details}")
-                    
-                    # Terminal Output
-                    df_high = df_res[df_res['Variant_Count'] >= args.min_variant_count]
-                    
-                    n_selected = len(df_high)
-                    pct = (n_selected / n_total_group * 100) if n_total_group > 0 else 0.0
-                    
-                    summary_msg = (
-                        f"\n======================================================\n"
-                        f"[Summary] Target Group: {args.sample_group.capitalize()}\n"
-                        f"[Summary] Total Samples in Group: {n_total_group}\n"
-                        f"[Summary] Samples with >= {args.min_variant_count} variants: {n_selected} ({pct:.2f}%)\n"
-                        f"======================================================"
-                    )
-                    
-                    print(summary_msg)
-                    
-                    if not df_high.empty:
-                        print(f"\n[ALERT] Detailed List (Sorted by Variant Count DESC):")
-                        print(df_high.to_string(index=False))
-                        # Print summary again at the bottom for visibility
-                        print(summary_msg)
+                        # Save
+                        out_details = os.path.join(os.path.dirname(args.out_log), f"{args.gene}.{g_name}.sample_details.tsv")
+                        df_res.to_csv(out_details, sep='\t', index=False)
+                        print_success(f"Sample details saved to: {out_details}")
+                        
+                        # Terminal Output
+                        df_high = df_res[df_res['Variant_Count'] >= args.min_variant_count]
+                        
+                        n_selected = len(df_high)
+                        pct = (n_selected / g_n * 100) if g_n > 0 else 0.0
+                        
+                        # Stylish Summary
+                        print(f"\n{Style.HEADER}┌── Summary: {g_name.capitalize()} {Style.RESET}")
+                        print(f"{Style.HEADER}│{Style.RESET}  {'Total Samples':<25}: {Style.BOLD}{g_n}{Style.RESET}")
+                        pct_color = Style.GREEN if pct > 0 else Style.WARNING
+                        print(f"{Style.HEADER}│{Style.RESET}  {'Samples (>= ' + str(args.min_variant_count) + ' vars)':<25}: {pct_color}{n_selected} ({pct:.2f}%){Style.RESET}")
+                        print(f"{Style.HEADER}└────────────────────────────────{Style.RESET}")
+
+                        if not df_high.empty:
+                            print(f"\n  {Style.BOLD}Detailed Sample List:{Style.RESET}")
+                            
+                            # Manual Printing for Professional Coloring
+                            h_fid = "FID"
+                            h_iid = "IID"
+                            h_nv = "N_Vars"
+                            h_mac = "MAC"
+                            h_var = "Variants"
+                            
+                            # Header
+                            print(f"  {Style.UNDERLINE}{h_fid:<15} {h_iid:<15} {h_nv:<8} {h_mac:<6} {h_var}{Style.RESET}")
+                            
+                            for _, row in df_high.iterrows():
+                                fid = str(row['FID'])
+                                iid = str(row['IID'])
+                                n_vars = str(row['Variant_Count'])
+                                mac = str(row['Total_MAC'])
+                                variants_str = str(row['Variants'])
+                                
+                                # Colorize Genotypes in Variants String
+                                # Format: rsID(GT) -> 0/1 (Yellow/Warning), 1/1 (Red/Fail)
+                                colored_vars = []
+                                if variants_str and variants_str != "nan":
+                                    raw_vars = variants_str.split(';')
+                                    for v in raw_vars:
+                                        if '(' in v and ')' in v:
+                                            try:
+                                                # Split rs123(0/1)
+                                                base, gt_part = v.split('(')
+                                                gt = gt_part.rstrip(')')
+                                                
+                                                if gt == "1/1":
+                                                    gt_colored = f"{Style.FAIL}{gt}{Style.RESET}"
+                                                elif gt == "0/1":
+                                                    gt_colored = f"{Style.WARNING}{gt}{Style.RESET}"
+                                                else:
+                                                    gt_colored = gt
+                                                
+                                                colored_vars.append(f"{base}({gt_colored})")
+                                            except:
+                                                colored_vars.append(v)
+                                        else:
+                                            colored_vars.append(v)
+                                    
+                                    final_var_str = "; ".join(colored_vars)
+                                else:
+                                    final_var_str = ""
+                                
+                                print(f"  {fid:<15} {iid:<15} {n_vars:<8} {mac:<6} {final_var_str}")
+                            
+                            print(f"{Style.CYAN}{'-' * 80}{Style.RESET}")
+                        else:
+                            print(f"  {Style.WARNING}No samples met the criteria.{Style.RESET}")
+
                     else:
-                        print(f"\nNo samples met the criteria.")
-                else:
-                    print("No variants found in exported sample data.")
-                    
-            except Exception as e:
-                print(f"[ERROR] processing sample details: {e}")
+                        print_warning(f"No variants found in exported sample data for {g_name}.")
+                        
+                except Exception as e:
+                    print_error(f"Processing sample details for {g_name}: {e}")
 
 if __name__ == "__main__":
     main()
