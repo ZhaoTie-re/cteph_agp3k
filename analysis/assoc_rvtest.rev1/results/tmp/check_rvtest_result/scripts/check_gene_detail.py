@@ -21,11 +21,15 @@ class Style:
     UNDERLINE = '\033[4m'
     RESET = ENDC
 
+# Global Verbose Flag
+VERBOSE = False
+
 def print_header(msg):
     print(f"{Style.BOLD}{Style.HEADER}{msg}{Style.ENDC}")
 
 def print_info(msg):
-    print(f"{Style.BLUE}[INFO] {msg}{Style.ENDC}")
+    if VERBOSE:
+        print(f"{Style.BLUE}[INFO] {msg}{Style.ENDC}")
 
 def print_success(msg):
     print(f"{Style.GREEN}[SUCCESS] {msg}{Style.ENDC}")
@@ -169,8 +173,12 @@ def main():
     parser.add_argument("--sample-group", default="both", choices=["case", "control", "both"], help="Sample group to analyze for details (default: both)")
     parser.add_argument("--min-variant-count", type=int, default=1, help="Minimum variants to trigger alert (default: 1)")
     parser.add_argument("--no-sample-details", action='store_true', help="Disable sample level detail calculation")
+    parser.add_argument("--verbose", action='store_true', help="Enable verbose logging")
 
     args = parser.parse_args()
+    
+    global VERBOSE
+    VERBOSE = args.verbose
     
     # 0. Robustness Checks
     check_dependencies(['bcftools'])
@@ -226,7 +234,7 @@ def main():
                  f"-r {region_arg} "
                  f"{args.vcf_file} > {vcf_ids_file}")
                  
-    run_cmd(cmd_query, verbose=True)
+    run_cmd(cmd_query, verbose=VERBOSE)
 
     # Load VCF Info into Dictionary
     vcf_info_dict = {}
@@ -396,9 +404,9 @@ def main():
             cmd_tommo = (f"bcftools query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%INFO/AF\\t%ID\\n' "
                          f"-R {tommo_regions_file} "
                          f"{args.tommo_vcf} > {tommo_out}")
-            run_cmd(cmd_tommo, verbose=True)
+            run_cmd(cmd_tommo, verbose=VERBOSE)
         else:
-             print("[WARNING] No variant IDs found to query Tommo.")
+             if VERBOSE: print("[WARNING] No variant IDs found to query Tommo.")
 
         # Read Tommo into dict
         if os.path.exists(tommo_out):
@@ -672,6 +680,17 @@ def main():
         # Check if Is_Alt_Minor is always "Yes" (Needed for Terminal & Log)
         all_alt_minor = all(r['Is_Alt_Minor'] == "Yes" for r in variant_records)
 
+        # Terminal Output for Input Configuration
+        print(f"\n{Style.HEADER}┌── Analysis Configuration (Source Files) ──{Style.RESET}")
+        print(f"{Style.HEADER}│{Style.RESET}  Assoc File     : {os.path.abspath(args.assoc_file)}")
+        print(f"{Style.HEADER}│{Style.RESET}  VCF File       : {os.path.abspath(args.vcf_file)}")
+        if args.burden_file:
+             print(f"{Style.HEADER}│{Style.RESET}  Burden File    : {os.path.abspath(args.burden_file)}")
+        if args.skato_file:
+             print(f"{Style.HEADER}│{Style.RESET}  SKAT-O File    : {os.path.abspath(args.skato_file)}")
+        print(f"{Style.HEADER}│{Style.RESET}  Plink Prefix   : {os.path.abspath(args.plink_prefix)}")
+        print(f"{Style.HEADER}└───────────────────────────────────────────{Style.RESET}")
+
         # Terminal Output for Gene Stats (Stylish & Complete)
         print(f"\n{Style.HEADER}┌── Gene Analysis: {Style.BOLD}{args.gene}{Style.RESET} {Style.HEADER}─────────────────{Style.RESET}")
         print(f"{Style.HEADER}│{Style.RESET}  RVTest NumVar  : {rvtest_numvar}")
@@ -680,8 +699,8 @@ def main():
         print(f"{Style.HEADER}│{Style.RESET}  SKAT-O P-value : {skato_stats['Pvalue']} (FDR: {skato_stats['FDR']})")
         print(f"{Style.HEADER}│{Style.RESET}  SKAT-O Rho     : {skato_stats['rho']}")
         print(f"{Style.HEADER}│{Style.RESET}  Total MAC      : {int(total_mac_case + total_mac_ctrl)} (Case: {int(total_mac_case)}, Ctrl: {int(total_mac_ctrl)})")
-        print(f"{Style.HEADER}│{Style.RESET}  Ratio Case     : {ratio_case:.6f}")
-        print(f"{Style.HEADER}│{Style.RESET}  Ratio Ctrl     : {ratio_ctrl:.6f}")
+        print(f"{Style.HEADER}│{Style.RESET}  Ratio Case     : {ratio_case:.6f} (MAC / 2*N)")
+        print(f"{Style.HEADER}│{Style.RESET}  Ratio Ctrl     : {ratio_ctrl:.6f} (MAC / 2*N)")
         print(f"{Style.HEADER}└────────────────────────────────────────{Style.RESET}")
 
         # Terminal Output for Variant Details (Restored & Professionalized & Full Info)
