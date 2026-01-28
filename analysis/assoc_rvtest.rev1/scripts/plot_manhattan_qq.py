@@ -108,353 +108,257 @@ def main():
     # Plotting Setup
     # -------------------------------------------------------------------------
     
+    # -------------------------------------------------------------------------
+    # Plotting Setup (Publication Quality)
+    # -------------------------------------------------------------------------
+    
     # Set publication style params manually to ensure consistency
+    # Using 'Arial' or 'Helvetica' style logic via sans-serif
     plt.rcParams.update({
         'font.family': 'sans-serif',
-        'font.size': 10,
-        'axes.labelsize': 12,
-        'axes.titlesize': 14,
-        'xtick.labelsize': 10,
-        'ytick.labelsize': 10,
-        'figure.dpi': 300,
+        'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans', 'Liberation Sans', 'sans-serif'],
+        'font.size': 18,              # Even larger base font
+        'axes.labelsize': 24,         # Even larger label font
+        'axes.titlesize': 28,         # Even larger title font
+        'xtick.labelsize': 18,        # Larger tick font
+        'ytick.labelsize': 18,
+        'figure.dpi': 400,            
+        'axes.linewidth': 2.5,        # Thicker axes
         'axes.spines.top': False,
-        'axes.spines.right': False
+        'axes.spines.right': False,
+        'legend.fontsize': 27,        # Increased 1.5x (was 18)
+        'legend.frameon': False,
+        'xtick.direction': 'out',
+        'ytick.direction': 'out',
+        'xtick.major.size': 10,
+        'ytick.major.size': 10
     })
     
-    fig = plt.figure(figsize=(15, 6))
-    gs = fig.add_gridspec(1, 2, width_ratios=[2, 1], wspace=0.2)
+    # Wide figure, balanced aspect ratio
+    # Increased width to (30, 10) and adjusted width_ratios to [1.8, 1] to ensure QQ plot is height-constrained (fills full height) 
+    # rather than width-constrained, guaranteeing Y-axis alignment with Manhattan plot.
+    fig = plt.figure(figsize=(30, 10), facecolor='white')
+    # GridSpec: Manhattan gets more space (1.8 : 1)
+    gs = fig.add_gridspec(1, 2, width_ratios=[1.8, 1], wspace=0.15)
     
     ax_man = fig.add_subplot(gs[0])
     ax_qq = fig.add_subplot(gs[1])
     
     # -------------------------------------------------------------------------
+    # Calculation of Global Y Limit (Shared)
+    # -------------------------------------------------------------------------
+    
+    # We want Y axes to align. Determine the max Y needed.
+    max_logp_val = df['LOG10_P'].max()
+    
+    # Calculate Bonferroni
+    n_tests = len(df)
+    bonferroni_thresh = -np.log10(0.05 / n_tests)
+    
+    # Determine Ceiling
+    # If explicit significant hits exist, go higher. If not, at least show threshold.
+    global_ylim = max(max_logp_val, bonferroni_thresh) * 1.15
+    # Ensure a minimum height for visual aesthetics (e.g. 8)
+    global_ylim = max(global_ylim, 8.0)
+
+    # -------------------------------------------------------------------------
     # Manhattan Plot (Left)
     # -------------------------------------------------------------------------
     
     chromosomes = sorted(df['CHR_NUM'].unique())
-    colors = ['#4A4A4A', '#808080'] # Dark Grey / Light Grey classic academic
-    # Alternatively: Blue/Navy ['#1f77b4', '#aec7e8'] or similar
-    colors = ['#2C3E50', '#7F8C8D'] # Slate / Concrete
+    colors = ['#4D4D4D', '#A6A6A6'] # Professional Grey Scale
 
     x_labels = []
     x_ticks = []
     
-    last_x = 0
-    for i, chrom in enumerate(chromosomes):
+    # Add horizontal grid for readability (Subtle)
+    ax_man.grid(axis='y', linestyle='-', linewidth=0.5, color='#E0E0E0', alpha=1.0, zorder=0)
+
+    # Pre-calculate global offsets
+    chr_offset_map = {}
+    current_offset = 0
+    
+    for chrom in chromosomes:
         c_data = df[df['CHR_NUM'] == chrom]
+        if c_data.empty: continue
         
-        # Relative position
-        # Gene based: use simple index or physical position?
-        # Physical position is better for correct spacing
-        r_pos = c_data[pos_col].values
-        if len(r_pos) > 0:
-            min_pos = r_pos.min()
-            rel_pos = r_pos - min_pos
-            
-            # Scatter
-            ax_man.scatter(last_x + rel_pos, c_data['LOG10_P'], 
-                           color=colors[i % 2], s=15, alpha=0.9, linewidth=0)
-            
-            # Ticks
-            mid_pt = last_x + (rel_pos.max() / 2)
-            x_ticks.append(mid_pt)
-            
-            # Label
-            label = str(chrom)
-            if chrom == 23: label = 'X'
-            elif chrom == 24: label = 'Y'
-            elif chrom == 25: label = 'XY'
-            elif chrom == 26: label = 'MT'
-            x_labels.append(label)
-            
-            # Update last_x
-            # Add a buffer between chromosomes equal to e.g. 5% of this chr length or fixed
-            # Just simple concatenation of max pos
-            last_x += rel_pos.max()
-            
-            # Add small gap strictly in index space?
-            # For linear genome view, we usually just concat. 
-            # To distinguish visually, we add a small offset
-            last_x += 1 # small numeric offset if using index, usually big for pos
-            # Actually, using index for plotting might be safer if positions are sparse gene centers
-            # But let's stick to 'concatenated physical coordinates' approximation:
-            # Shift by largest length? No, usually just add the max.
-            
-    # Draw Thresholds
-    # Bonferroni
-    n_tests = len(df)
-    bonferroni_thresh = -np.log10(0.05 / n_tests)
-    ax_man.axhline(bonferroni_thresh, color='#E74C3C', linestyle='--', linewidth=1.2, alpha=0.9,
-                   label=f'Bonferroni (P=${0.05/n_tests:.1e}$)')
-    
-    # FDR (if available in file, usually q-value < 0.05)
-    # Highlight significant hits with color instead of line/circle
-    fdr_col = next((c for c in ['fdr', 'qval', 'q_value'] if c in df.columns), None)
-    sig_fdr_hits = pd.DataFrame() # Define for later annotation logic
-    
-    if fdr_col:
-        # Select hits that pass FDR but fail Bonferroni (to give them distinct color)
-        # Hits passing Bonferroni are already obviously high
-        # Or just highlight ALL FDR < 0.05 hits
-        sig_fdr_hits = df[df[fdr_col] < 0.05]
+        min_pos = c_data[pos_col].min()
+        max_pos = c_data[pos_col].max()
+        c_len = max_pos - min_pos
         
-        if not sig_fdr_hits.empty:
-            # We want to re-plot these points with a distinct color/style
-            # Need to recalculate their coordinates
-            
-            # Reconstruct chr_offset_map logic
-            chr_offset_map = {}
-            temp_offset = 0
-            for c in chromosomes:
-                 c_max = df[df['CHR_NUM'] == c][pos_col].max()
-                 c_min = df[df['CHR_NUM'] == c][pos_col].min()
-                 c_len = c_max - c_min
-                 chr_offset_map[c] = temp_offset
-                 temp_offset += c_len + 1 
-            
-            fdr_x = []
-            fdr_y = []
-            for idx, row in sig_fdr_hits.iterrows():
-                g_chrom = row['CHR_NUM']
-                if g_chrom not in chr_offset_map: continue
-                g_rpos = row[pos_col]
-                c_min = df[df['CHR_NUM'] == g_chrom][pos_col].min()
-                x = chr_offset_map[g_chrom] + (g_rpos - c_min)
-                fdr_x.append(x)
-                fdr_y.append(row['LOG10_P'])
-            
-            # Plot highlight points
-            ax_man.scatter(fdr_x, fdr_y, color='#E74C3C', s=25, alpha=1.0, zorder=3, 
-                           label='FDR < 0.05')
+        chr_offset_map[chrom] = (current_offset, min_pos)
+        
+        mid_pt = current_offset + (c_len / 2)
+        x_ticks.append(mid_pt)
+        
+        label = str(chrom)
+        if chrom == 23: label = 'X'
+        elif chrom == 24: label = 'Y'
+        elif chrom == 25: label = 'XY'
+        elif chrom == 26: label = 'MT'
+        x_labels.append(label)
+        
+        current_offset += c_len + 1 # Buffer
+        
+    last_x = current_offset 
 
+    # Plot Background Points (All) - zorder=1 to stay behind threshold lines
+    for i, chrom in enumerate(chromosomes):
+        if chrom not in chr_offset_map: continue
+        
+        c_data = df[df['CHR_NUM'] == chrom]
+        offset, min_p = chr_offset_map[chrom]
+        
+        x_glob = offset + (c_data[pos_col] - min_p)
+        
+        # Consistent small dots
+        ax_man.scatter(x_glob, c_data['LOG10_P'], 
+                       color=colors[i % 2], s=27, alpha=1.0, linewidth=0, zorder=2)
+            
+    # Draw Bonferroni Threshold
+    # Using a dark line for threshold
+    ax_man.axhline(bonferroni_thresh, color='#CC0000', linestyle='--', linewidth=1.5, alpha=1.0, zorder=3,
+                   label=r'Bonferroni ($P < %.1e$)' % (0.05/n_tests))
+    
+    # Highlight Significant Hits (Bonferroni) - RED
+    sig_bonf_hits = df[df['LOG10_P'] >= bonferroni_thresh].copy()
+    
+    if not sig_bonf_hits.empty:
+        hit_x = []
+        hit_y = []
+        for _, row in sig_bonf_hits.iterrows():
+            c = row['CHR_NUM']
+            if c not in chr_offset_map: continue
+            
+            offset, min_p = chr_offset_map[c]
+            x = offset + (row[pos_col] - min_p)
+            
+            hit_x.append(x)
+            hit_y.append(row['LOG10_P'])
+            
+        # Plot highlight points - Distinct Red
+        ax_man.scatter(hit_x, hit_y, color='#CC0000', s=83, alpha=1.0, linewidth=0.5, edgecolor='black', zorder=4, 
+                       label='Significant')
+
+        # Annotate Significant Genes
+        if gene_col:
+            texts = []
+            for _, row in sig_bonf_hits.iterrows():
+                c = row['CHR_NUM']
+                if c not in chr_offset_map: continue
+                
+                offset, min_p = chr_offset_map[c]
+                x = offset + (row[pos_col] - min_p)
+                y = row['LOG10_P']
+                label = str(row[gene_col])
+                
+                # Add text
+                t = ax_man.text(x, y, label, 
+                                fontstyle='italic', fontsize=24, fontweight='bold', # Increased 1.5x (was 16)
+                                ha='center', va='bottom', zorder=10)
+                texts.append(t)
+            
+            # Use adjust_text if installed to prevent overlap
+            if adjust_text:
+                adjust_text(texts, ax=ax_man, 
+                            arrowprops=dict(arrowstyle="-", color='black', lw=0.5, alpha=0.8),
+                            expand_points=(1.5, 1.5))
+    
+    # Formatting Axes
     ax_man.set_xticks(x_ticks)
-    # Stagger labels to show all chromosomes without overlap
-    # Indices 0, 2, 4... (Chr 1, 3, 5...) on top row
-    # Indices 1, 3, 5... (Chr 2, 4, 6...) on bottom row (prefixed with newline)
+    # Stagger labels
     staggered_labels = [l if i % 2 == 0 else f"\n{l}" for i, l in enumerate(x_labels)]
-    ax_man.set_xticklabels(staggered_labels, fontsize=9, rotation=0)
-        
-    ax_man.set_xlabel('Chromosome', fontsize=12, fontweight='bold')
-    ax_man.set_xlabel('Chromosome', fontsize=12, fontweight='bold')
-    ax_man.set_ylabel(r'$-\log_{10}(P)$', fontsize=12, fontweight='bold')
-    # Format Title
-    # Parse title like "RVTest: impact_moderate_high - burden" to format nicely
-    # Expected: "RVTest: <filter> - <method>"
-    # If title structure matches, we can make it prettier.
-    # Otherwise use as is.
+    ax_man.set_xticklabels(staggered_labels, fontsize=18)
+    # Limit x-axis range
+    ax_man.set_xlim(-current_offset*0.015, current_offset*1.015)
     
-    clean_title = args.title
+    # Apply Shared Y-Limit
+    ax_man.set_ylim(0, global_ylim)
+        
+    ax_man.set_xlabel('Chromosome', fontsize=24, fontweight='bold', labelpad=14)
+    ax_man.set_ylabel(r'$-\log_{10}(P)$', fontsize=24, fontweight='bold', labelpad=14)
+    
+    # Title Processing
+    title_text = args.title
     if "RVTest:" in args.title:
-        try:
-            # Example: RVTest: impact_moderate_high - burden
-            parts = args.title.split(':')[-1].strip().split('-')
-            if len(parts) >= 2:
-                filt = parts[0].strip().replace('impact_', '')
-                meth = parts[1].strip()
-                # "Burden Test (Moderate & High Impact)"
-                filt_clean = filt.replace('_', ' ').title()
-                meth_clean = meth.title()
-                if meth_clean.lower() == 'skato': meth_clean = 'SKAT-O'
-                clean_title = f"{meth_clean} Test ({filt_clean} Impact)"
-        except:
-            pass
+         if "burden" in args.title.lower():
+             test_type = "Burden Test (CMC)"
+         elif "skato" in args.title.lower():
+             test_type = "SKAT-O Test"
+         else:
+             test_type = "Rare Variant Association"
+         title_text = test_type
 
-    # Increase title padding to make room for legend
-    ax_man.set_title(clean_title, fontweight='bold', fontsize=13, pad=30)
+    ax_man.set_title(title_text, fontweight='bold', fontsize=28, pad=24)
     
-    # Legend - placed above the plot area but below the title
-    # Using lower center at y=1.0 puts it just above the top spine
-    ax_man.legend(loc='lower center', bbox_to_anchor=(0.5, 1.0), ncol=2, 
-                  borderaxespad=0, frameon=False, fontsize=9)
-
-    # -------------------------------------------------------------------------
-    # Annotate Top Genes
-    # -------------------------------------------------------------------------
-    if gene_col:
-        # Priority 1: Bonferroni
-        # Priority 2: FDR
-        # Logic: Union of both sets
-        
-        sig_bonf = df[df['LOG10_P'] >= bonferroni_thresh]
-        
-        # Combine valid hits
-        anno_frames = [sig_bonf]
-        if fdr_col and not sig_fdr_hits.empty:
-            anno_frames.append(sig_fdr_hits)
-            
-        if anno_frames:
-            # Concat and drop duplicates
-            anno_points = pd.concat(anno_frames).drop_duplicates()
-        else:
-            anno_points = pd.DataFrame()
-        
-        # If we have points to annotate
-        if len(anno_points) > 0:
-             texts = []
-             # If too many points, limit to top 20
-             if len(anno_points) > 20:
-                 anno_points = anno_points.nlargest(20, 'LOG10_P')
-                 
-             # Re-map offsets if not already done (in case FDR highlight block was skipped)
-             if 'chr_offset_map' not in locals():
-                chr_offset_map = {}
-                temp_offset = 0
-                for c in chromosomes:
-                     c_max = df[df['CHR_NUM'] == c][pos_col].max()
-                     c_min = df[df['CHR_NUM'] == c][pos_col].min()
-                     c_len = c_max - c_min
-                     chr_offset_map[c] = temp_offset
-                     temp_offset += c_len + 1
-
-             for idx, row in anno_points.iterrows():
-                 g_chrom = row['CHR_NUM']
-                 if g_chrom not in chr_offset_map: continue
-
-                 g_rpos = row[pos_col]
-                 c_min = df[df['CHR_NUM'] == g_chrom][pos_col].min()
-                 
-                 x_coord = chr_offset_map[g_chrom] + (g_rpos - c_min)
-                 y_coord = row['LOG10_P']
-                 
-                 gene_name = row[gene_col]
-                 
-                 # Italic gene name
-                 t = ax_man.text(x_coord, y_coord, gene_name, fontsize=8.5, fontweight='bold', style='italic', color='#444444', 
-                                 bbox=dict(facecolor='white', alpha=0.7, edgecolor='none', pad=1))
-                 texts.append(t)
-            
-             if adjust_text:
-                 # Improve repel settings to avoid overlap more aggressively
-                 adjust_text(texts, ax=ax_man, 
-                             arrowprops=dict(arrowstyle='-', color='#666666', lw=0.6),
-                             force_points=0.3, force_text=1.0, 
-                             expand_points=(1.2, 1.2), expand_text=(1.2, 1.2))
-    
-    # Remove logic that hides every 2nd label to ensure all chromosomes are shown
-    # if len(x_labels) > 15: ... removed
-
-    # Add numeric formatting to y-axis (though log scale usually doesn't need commas, but just in case)
-    # ax_man.get_yaxis().set_major_formatter(plt.FuncFormatter(lambda x, loc: "{:,}".format(int(x))))
-    
-    # Clean spines
-    ax_man.spines['top'].set_visible(False)
-    ax_man.spines['right'].set_visible(False)
-    ax_man.spines['left'].set_linewidth(0.8)
-    ax_man.spines['bottom'].set_linewidth(0.8)
+    # Legend (Manhattan)
+    # Filter duplicates just in case
+    h_man, l_man = ax_man.get_legend_handles_labels()
+    by_label_man = dict(zip(l_man, h_man))
+    ax_man.legend(by_label_man.values(), by_label_man.keys(), loc='upper right', 
+                  frameon=True, fancybox=False, edgecolor='black', fontsize=27, borderpad=0.8) # Increased 1.5x (was 18)
 
 
     # -------------------------------------------------------------------------
-    # QQ Plot (Right)
+    # QQ Plot (Right) - Professional Square & Aligned
     # -------------------------------------------------------------------------
-
     
-    n_points = len(df)
-    observed = np.sort(df['LOG10_P'].values)
-    expected = -np.log10(np.arange(1, n_points + 1) / (n_points + 1))
+    # Force Y-axis to match Manhattan
+    ax_qq.set_ylim(0, global_ylim)
     
-    # Sort expected descending to match observed (which is sorted ascending? No, sort produces ascending)
-    # -log10(P) large means small P.
-    # small P -> large -log10.
-    # sort(P) -> small to large.
-    # -log(sort(P)) -> large to small.
-    # But usually we plot expected vs observed 0 to max.
-    # Let's match:
-    # Expected: uniform 0..1 distributed -> sort -> k/(n+1)
-    # -log10(k/(n+1)) -> decreases as k increases.
-    # So we sort Observed ascending (small values first? No QQ usually is Large vs Large at the top right)
+    # Force X-axis to match Y-axis (to keep range consistent as requested)
+    ax_qq.set_xlim(0, global_ylim)
     
-    # Standard way:
-    # Expected: -log10( (N - i + 0.5) / N ) or similar
-    # Observed: -log10( sort(P) )
+    # Ensure square aspect ratio
+    # adjustable='box' changes the physical box dimensions (shrinking width since we allocated extra)
+    # anchor='W' keeps it left-aligned to minimize gap with Manhattan plot
+    ax_qq.set_aspect('equal', adjustable='box', anchor='W') 
     
-    # Let's re-sort P low to high
+    # Grid
+    ax_qq.grid(True, linestyle='-', linewidth=0.5, color='#E0E0E0', alpha=1.0)
+    
     p_sorted = np.sort(df[p_col].values)
     observed_logp = -np.log10(p_sorted)
     
-    # Expected P low to high: 1/(n+1), 2/(n+1) ... 
-    # But for log scale:
-    # i=1 (smallest P) -> 1/(n+1) -> largest log
-    # i=n (largest P) -> n/(n+1) ~ 1 -> 0 log
+    n_points = len(df)
+    pp = (np.arange(1, n_points + 1) - 0.5) / n_points
+    expected_logp = -np.log10(pp)
     
-    pp_expected = (np.arange(1, n_points + 1) - 0.5) / n_points # Hazen plotting position or simply i/(n+1)
-    expected_logp = -np.log10(pp_expected)
+    # Scatter points - Dark Blue Grey
+    ax_qq.scatter(expected_logp, observed_logp, c='#2C3E50', s=30, alpha=0.8, linewidth=0, zorder=2, label='Observed')
     
-    ax_qq.scatter(expected_logp, observed_logp, c='#2C3E50', s=15, alpha=0.7, linewidth=0)
+    # Identity Line - Red dashed
+    # Line goes from 0 to global_ylim
+    ax_qq.plot([0, global_ylim], [0, global_ylim], color='#CC0000', linestyle='--', linewidth=1.5, zorder=3, label='Expected')
     
-    # Identity Line
-    max_val = max(np.max(expected_logp), np.max(observed_logp))
-    ax_qq.plot([0, max_val], [0, max_val], color='#E74C3C', linestyle='--')
-    
-    # Confidence Interval (95%)
-    # Beta distribution based CI
-    # For large N, calculating Beta ppf for every point is slow.
-    # We can calculate it for the expected line points.
-    
-    # Only draw CI if N < 100000 or downsample?
-    # Drawing shading is fast enough for ~20k genes.
-    
-    # k goes from 1 to n (smallest P to largest P)
-    # k=1 corresponds to observed_logp[0] (largest value) if we sorted P ascending?
-    # No, observed_logp = -log10(sort(P)). P[0] is smallest. -log(P[0]) is largest.
-    # expected_logp = -log10( (i-0.5)/n ). i=1 is smallest fraction -> largest log.
-    
-    # The order matches.
-    
-    # CI for the i-th order statistic of Uniform(0,1) is Beta(i, n-i+1)
-    # i=1..n
+    # Confidence Interval
     index = np.arange(1, n_points + 1)
+    lower_p = stats.beta.ppf(0.025, index, n_points - index + 1)
+    upper_p = stats.beta.ppf(0.975, index, n_points - index + 1)
+    lower_log = -np.log10(upper_p)
+    upper_log = -np.log10(lower_p)
     
-    # Lower/Upper bounds for P-value
-    # alpha=0.95 -> 0.025 and 0.975
-    # Warning: beta.ppf might range check.
+    ax_qq.fill_between(expected_logp, lower_log, upper_log, color='#B0BEC5', alpha=0.4, zorder=1, label='95% CI')
     
-    # Optimization: Calculate CI only for a subset of points for the ribbon
-    # or just plotting distinct points.
-    
-    if n_points < 50000:
-        cl = 0.95
-        # Beta parameters: a=i, b=n-i+1
-        # P_upper = beta.ppf(1-(1-cl)/2, i, n-i+1) which is small P
-        # P_lower = beta.ppf((1-cl)/2, i, n-i+1) which is small P (wait)
-        
-        # P-values:
-        # upper_p = stats.beta.ppf(0.975, index, n_points - index + 1)
-        # lower_p = stats.beta.ppf(0.025, index, n_points - index + 1)
-        
-        # Log transformed:
-        # lower_log = -np.log10(upper_p) # Because P is small, -log is big
-        # upper_log = -np.log10(lower_p)
-        
-        # But for QQ plot, we usually shade around the diagonal.
-        # Actually expected_logp IS the theoretical mean.
-        # The CI is around expected_logp.
-        
-        # Let's use the approximate CI for the null distribution
-        # -log10(L) and -log10(U)
-        
-        lower_p_bound = stats.beta.ppf(0.025, index, n_points - index + 1)
-        upper_p_bound = stats.beta.ppf(0.975, index, n_points - index + 1)
-        
-        lower_log_bound = -np.log10(upper_p_bound) # Map upper P to lower log? No. P=0.9 -> log~0. P=0.01 -> log=2. Upper P corresponds to lower Log.
-        upper_log_bound = -np.log10(lower_p_bound) 
-        
-        # Fill between expects matched x-axis. expected_logp matches index order.
-        ax_qq.fill_between(expected_logp, lower_log_bound, upper_log_bound, color='gray', alpha=0.2, label='95% CI')
-
-    # Add Lambda GC Label and N genes
+    # Text Box for Lambda and N (moved to Bottom Right) - functioning as the main legend info
     stats_text = f"$\lambda_{{GC}} = {lambda_val:.3f}$\n$N_{{genes}} = {n_points:,}$"
-    ax_qq.text(0.05, 0.95, stats_text, 
-               transform=ax_qq.transAxes, fontsize=11, fontweight='bold',
-               verticalalignment='top',
-               bbox=dict(boxstyle='round', facecolor='white', alpha=0.9, edgecolor='#CCCCCC'))
-
-    ax_qq.set_xlabel(r'Expected $-\log_{10}(P)$')
-    ax_qq.set_ylabel(r'Observed $-\log_{10}(P)$')
-    ax_qq.set_title("Q-Q Plot")
     
+    ax_qq.text(0.95, 0.05, stats_text, 
+               transform=ax_qq.transAxes, fontsize=27, # Increased 1.5x (was 18)
+               verticalalignment='bottom', horizontalalignment='right',
+               bbox=dict(boxstyle='square,pad=0.5', facecolor='white', alpha=1.0, edgecolor='black', linewidth=1.5))
+
+    ax_qq.set_xlabel(r'Expected $-\log_{10}(P)$', fontsize=24, fontweight='bold', labelpad=14)
+    # Hide Y label if it's redundant? No, keep it for clarity.
+    ax_qq.set_ylabel(r'Observed $-\log_{10}(P)$', fontsize=24, fontweight='bold', labelpad=14)
+    ax_qq.set_title("Q-Q Plot", fontweight='bold', fontsize=28, pad=24)
+    
+    # Standard legend removed per user request: "Only keep one lambda and gene number legend"
+
     plt.tight_layout()
-    plt.savefig(f"{args.output_prefix}.png", dpi=300)
-    plt.savefig(f"{args.output_prefix}.pdf", dpi=300)
+    # Use bbox_inches='tight' to ensure large labels (like "Chromosome") are not cut off
+    plt.savefig(f"{args.output_prefix}.png", dpi=300, bbox_inches='tight')
+    plt.savefig(f"{args.output_prefix}.pdf", dpi=300, bbox_inches='tight')
     print(f"Saved plots to {args.output_prefix}.png/pdf")
 
 if __name__ == "__main__":

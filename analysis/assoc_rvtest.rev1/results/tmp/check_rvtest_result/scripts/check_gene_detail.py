@@ -400,8 +400,8 @@ def main():
                     f.write(reg + "\n")
             
             # Tommo VCF query using specific regions
-            # Added %ID to get rsID
-            cmd_tommo = (f"bcftools query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%INFO/AF\\t%ID\\n' "
+            # Added %ID to get rsID, %FILTER to get Filter Status
+            cmd_tommo = (f"bcftools query -f '%CHROM\\t%POS\\t%REF\\t%ALT\\t%INFO/AF\\t%ID\\t%FILTER\\n' "
                          f"-R {tommo_regions_file} "
                          f"{args.tommo_vcf} > {tommo_out}")
             run_cmd(cmd_tommo, verbose=VERBOSE)
@@ -411,10 +411,10 @@ def main():
         # Read Tommo into dict
         if os.path.exists(tommo_out):
             try:
-                # CHROM POS REF ALT AF ID
+                # CHROM POS REF ALT AF ID FILTER
                 # Check if file is empty
                 if os.stat(tommo_out).st_size > 0:
-                    t_df = pd.read_csv(tommo_out, sep='\t', header=None, names=['CHROM', 'POS', 'REF', 'ALT', 'AF', 'ID'])
+                    t_df = pd.read_csv(tommo_out, sep='\t', header=None, names=['CHROM', 'POS', 'REF', 'ALT', 'AF', 'ID', 'FILTER'])
                     for _, row in t_df.iterrows():
                         # Normalize CHROM key to strip 'chr' to match Plink output '3'
                         c_key = str(row['CHROM']).replace('chr', '')
@@ -424,7 +424,7 @@ def main():
                         rsid_val = str(row['ID'])
                         if not rsid_val or rsid_val.lower() == 'nan': rsid_val = "."
                         
-                        tommo_dict[key] = (row['AF'], rsid_val)
+                        tommo_dict[key] = (row['AF'], rsid_val, row['FILTER'])
             except Exception as e:
                 print_warning(f"Failed to read Tommo output: {e}")
     else:
@@ -575,19 +575,37 @@ def main():
         
         # Tommo
         tommo_key = f"{chrom}:{pos}:{ref}:{alt}"
-        val = tommo_dict.get(tommo_key, ("NA", "."))
+        # Dictionary stores (AF, rsID, FILTER)
+        val = tommo_dict.get(tommo_key, None)
         
         val_af = "NA"
         val_rsid = "."
+        val_filter = "No_Record"
         
-        if isinstance(val, tuple):
-             val_af = val[0]
+        if val is not None:
+             # Record Exists
+             raw_af = val[0]
              val_rsid = val[1]
+             raw_filter = str(val[2])
+             
+             if raw_filter == "PASS":
+                 try:
+                     val_af = float(raw_af)
+                     val_filter = "." # Placeholder for clean record
+                 except:
+                     val_af = "NA"
+                     val_filter = "ParseError"
+             else:
+                 # Found but not PASS (e.g. LowQual) -> Force AAF to NA
+                 val_af = "NA"
+                 val_filter = raw_filter
         else:
-             val_af = val
+             # No Record
+             val_af = "NA"
+             val_filter = "No_Record"
              
         if val_af != "NA":
-             tommo_af = f"{float(val_af):.6f}"
+             tommo_af = f"{val_af:.6f}"
         else:
              tommo_af = "NA"
              
@@ -609,7 +627,8 @@ def main():
             "Ctrl_AAF": f"{af_ctrl:.6f}",
             "Case_MissRate": f"{miss_rate_case:.6f}",
             "Ctrl_MissRate": f"{miss_rate_ctrl:.6f}",
-            "ToMMo_AAF": tommo_af
+            "ToMMo_AAF": tommo_af,
+            "ToMMo_FilterStatus": val_filter
         }
         variant_records.append(rec)
 
@@ -711,7 +730,7 @@ def main():
             header_cols = ["SNPID", "rsID", "Is_Alt_Minor", "Impact", "Effect", "Case_Geno(Ref/Het/Alt/Miss)", "Ctrl_Geno(Ref/Het/Alt/Miss)"]
             if not all_alt_minor:
                  header_cols.extend(["Case_MAF", "Ctrl_MAF"])
-            header_cols.extend(["Case_AAF", "Ctrl_AAF", "ToMMo_AAF", "Case_MissRate", "Ctrl_MissRate"])
+            header_cols.extend(["Case_AAF", "Ctrl_AAF", "ToMMo_AAF", "ToMMo_NA_Reason", "Case_MissRate", "Ctrl_MissRate"])
             
             table_data = [header_cols]
             
@@ -773,6 +792,7 @@ def main():
                     rec["Case_AAF"],
                     rec["Ctrl_AAF"],
                     rec["ToMMo_AAF"],
+                    rec["ToMMo_FilterStatus"],
                     rec["Case_MissRate"],
                     rec["Ctrl_MissRate"]
                 ])
@@ -826,7 +846,7 @@ def main():
         if not all_alt_minor:
              header.extend(["Case_MAF", "Ctrl_MAF"])
              
-        header.extend(["Case_AAF", "Ctrl_AAF", "ToMMo_AAF", "Case_MissRate", "Ctrl_MissRate"])
+        header.extend(["Case_AAF", "Ctrl_AAF", "ToMMo_AAF", "ToMMo_NA_Reason", "Case_MissRate", "Ctrl_MissRate"])
         f.write("\t".join(header) + "\n")
         
         for rec in variant_records:
@@ -847,6 +867,7 @@ def main():
                 rec["Case_AAF"],
                 rec["Ctrl_AAF"],
                 rec["ToMMo_AAF"],
+                rec["ToMMo_FilterStatus"],
                 rec["Case_MissRate"],
                 rec["Ctrl_MissRate"]
             ])

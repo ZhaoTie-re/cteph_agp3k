@@ -1234,24 +1234,33 @@ def plot_manhattan_plots_from_integrated_results(
     import matplotlib.pyplot as plt
     
     # 设置学术发表标准的图表样式
+    # 优先使用 Arial 或 Helvetica，如果不可用则回退到其他无衬线字体
     plt.rcParams.update({
-        'font.family': 'DejaVu Sans',  # 使用专业字体
-        'font.size': 10,               # 基础字体大小
-        'axes.titlesize': 12,          # 标题字体大小
-        'axes.labelsize': 11,          # 轴标签字体大小
-        'xtick.labelsize': 9,          # X轴刻度字体大小
-        'ytick.labelsize': 9,          # Y轴刻度字体大小
-        'legend.fontsize': 8,          # 图例字体大小
-        'figure.titlesize': 14,        # 图像标题字体大小
-        'axes.linewidth': 1.2,         # 轴线宽度
-        'grid.linewidth': 0.8,         # 网格线宽度
-        'lines.linewidth': 1.5,        # 线条宽度
-        'patch.linewidth': 1.0,        # 补丁线宽度
+        'font.family': 'sans-serif',   # 使用无衬线字体
+        'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans', 'Bitstream Vera Sans', 'sans-serif'],
+        'font.size': 12,               # 增大基础字体
+        'axes.titlesize': 14,          # 增大标题字体
+        'axes.labelsize': 14,          # 增大轴标签字体
+        'xtick.labelsize': 10,         # 增大X轴刻度字体
+        'ytick.labelsize': 10,         # 增大Y轴刻度字体
+        'legend.fontsize': 10,         # 增大图例字体
+        'figure.titlesize': 16,        # 增大图像标题字体
+        'axes.linewidth': 1.5,         # 加粗轴线
+        'grid.linewidth': 1.0,         # 网格线宽度
+        'lines.linewidth': 2.0,        # 线条宽度
+        'patch.linewidth': 1.5,        # 补丁线宽度
         'axes.edgecolor': 'black',     # 轴边框颜色
         'axes.facecolor': 'white',     # 图表背景色
         'figure.facecolor': 'white',   # 图像背景色
         'grid.alpha': 0.3,             # 网格透明度
         'axes.axisbelow': True,        # 网格在数据下方
+        'figure.autolayout': False,    # 禁用自动布局，手动控制
+        'savefig.bbox': 'tight',       # 保存时紧凑布局
+        # 强制设置字体颜色为黑色，防止暗色主题导致文字变白（不可见）
+        'text.color': 'black',
+        'axes.labelcolor': 'black',
+        'xtick.color': 'black',
+        'ytick.color': 'black',
     })
     
     with PdfPages(out_pdf_path) as pdf:
@@ -1307,8 +1316,9 @@ def plot_manhattan_plots_from_integrated_results(
                         _log(f"警告: 读取可信集文件失败: {e}")
             
             # 创建图表 - 学术发表标准布局
-            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10), dpi=dpi, 
-                                         gridspec_kw={'height_ratios': [1, 1], 'hspace': 0.4})
+            # 调整为纵向布局 (width=10, height=12) 以获得更好的可读性
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12), dpi=dpi, 
+                                         gridspec_kw={'height_ratios': [1, 1], 'hspace': 0.3})
             
             # 设置图表背景和边框
             for ax in [ax1, ax2]:
@@ -1319,7 +1329,27 @@ def plot_manhattan_plots_from_integrated_results(
                 ax.tick_params(direction='out', length=4, width=1.2)
             
             # 准备基于 LD_R2_WITH_LEAD 的颜色映射
-            x_pos = range(len(df))
+            import matplotlib.ticker as ticker
+            
+            # 使用物理位置作为 X 轴
+            x_values = df["POS_PARSED"]
+            
+            # 确定染色体名称用于 X 轴标签
+            unique_chrs = df["CHR_NUM"].unique()
+            valid_chrs = [c for c in unique_chrs if c > 0]
+            if len(valid_chrs) == 1:
+                chr_num = int(valid_chrs[0])
+                if chr_num == 23:
+                    chr_name = "X"
+                elif chr_num == 24:
+                    chr_name = "Y"
+                elif chr_num == 25:
+                    chr_name = "MT"
+                else:
+                    chr_name = str(chr_num)
+                xlabel_text = f'Chr{chr_name}'
+            else:
+                xlabel_text = 'Chr'
             
             # 检查是否有 LD_R2_WITH_LEAD 列，如果没有则使用默认值 0
             if "LD_R2_WITH_LEAD" in df.columns:
@@ -1335,14 +1365,14 @@ def plot_manhattan_plots_from_integrated_results(
             vmin, vmax = 0.0, 1.0
             
             # 上方子图：-log10(P) 曼哈顿图 - 学术标准样式
-            scatter1 = ax1.scatter(x_pos, df["-log10P"], c=ld_r2_values, s=25, alpha=0.8, 
+            scatter1 = ax1.scatter(x_values, df["-log10P"], c=ld_r2_values, s=25, alpha=0.8, 
                                   cmap=cmap, vmin=vmin, vmax=vmax, edgecolors='none', rasterized=True)
             
             # 标记lead variant - 更显眼的样式
             lead_mask = df["SNPID"] == lead_variant
             if lead_mask.any():
                 lead_idx = df[lead_mask].index[0]
-                lead_pos = list(df.index).index(lead_idx)
+                lead_pos = df.loc[lead_idx, "POS_PARSED"]
                 ax1.scatter(lead_pos, df.loc[lead_idx, "-log10P"], 
                            c='darkred', s=120, marker='D', edgecolors='white', linewidth=2, 
                            label='Lead Variant', zorder=10, alpha=0.9)
@@ -1360,7 +1390,7 @@ def plot_manhattan_plots_from_integrated_results(
                     cs_mask_in_set = df["SNPID"].isin(cs_variants_in_set)
                     
                     if cs_mask_in_set.any():
-                        cs_indices_in_set = [list(df.index).index(idx) for idx in df[cs_mask_in_set].index]
+                        cs_indices_in_set = df.loc[df[cs_mask_in_set].index, "POS_PARSED"]
                         # 获取这些变体的 LD R² 值用于颜色映射
                         cs_ld_r2_values = df.loc[df[cs_mask_in_set].index, "LD_R2_WITH_LEAD"].fillna(0.0) if "LD_R2_WITH_LEAD" in df.columns else [0.0] * len(cs_indices_in_set)
                         
@@ -1391,18 +1421,22 @@ def plot_manhattan_plots_from_integrated_results(
                                edgecolors=color, linewidth=2.0, alpha=0.9,
                                label=f'Credible Set {cs_name[2:]}')
             
-            ax1.set_xlabel('Variant Index', fontweight='bold')
+            ax1.set_xlabel(xlabel_text, fontweight='bold')
             ax1.set_ylabel('-log$_{10}$(P)', fontweight='bold')
             ax1.set_title(f'{lead_variant} — Association P-values', fontweight='bold', pad=15)
+            
+            # 格式化 X 轴标签，添加千分位分隔符
+            ax1.xaxis.set_major_formatter(ticker.StrMethodFormatter('{x:,.0f}'))
+            
             # 优化图例样式
-            legend1 = ax1.legend(loc='upper right', fontsize=9, frameon=True, fancybox=True, 
+            legend1 = ax1.legend(loc='upper right', fontsize=10, frameon=True, fancybox=True, 
                                shadow=True, framealpha=0.9, edgecolor='gray',
                                ncol=2 if credible_sets_df is not None and len(credible_sets_df["credible_set"].unique()) > 3 else 1)
             legend1.get_frame().set_linewidth(1.2)
             ax1.grid(True, alpha=0.4, linestyle='-', linewidth=0.8)
             
             # 下方子图：PIP 曼哈顿图 - 学术标准样式
-            scatter2 = ax2.scatter(x_pos, df["PIP"], c=ld_r2_values, s=25, alpha=0.8, 
+            scatter2 = ax2.scatter(x_values, df["PIP"], c=ld_r2_values, s=25, alpha=0.8, 
                                   cmap=cmap, vmin=vmin, vmax=vmax, edgecolors='none', rasterized=True)
             
             # 标记lead variant - 更显眼的样式
@@ -1424,7 +1458,7 @@ def plot_manhattan_plots_from_integrated_results(
                     cs_mask_in_set = df["SNPID"].isin(cs_variants_in_set)
                     
                     if cs_mask_in_set.any():
-                        cs_indices_in_set = [list(df.index).index(idx) for idx in df[cs_mask_in_set].index]
+                        cs_indices_in_set = df.loc[df[cs_mask_in_set].index, "POS_PARSED"]
                         # 获取这些变体的 LD R² 值用于颜色映射
                         cs_ld_r2_values = df.loc[df[cs_mask_in_set].index, "LD_R2_WITH_LEAD"].fillna(0.0) if "LD_R2_WITH_LEAD" in df.columns else [0.0] * len(cs_indices_in_set)
                         
@@ -1457,11 +1491,15 @@ def plot_manhattan_plots_from_integrated_results(
                                edgecolors=color, linewidth=2.0, alpha=0.9,
                                label=f'Credible Set {cs_name[2:]}')
             
-            ax2.set_xlabel('Variant Index', fontweight='bold')
+            ax2.set_xlabel(xlabel_text, fontweight='bold')
             ax2.set_ylabel('Posterior Inclusion Probability (PIP)', fontweight='bold')
             ax2.set_title(f'{lead_variant} — SuSiE Posterior Inclusion Probabilities', fontweight='bold', pad=15)
+            
+            # 格式化 X 轴标签，添加千分位分隔符
+            ax2.xaxis.set_major_formatter(ticker.StrMethodFormatter('{x:,.0f}'))
+            
             # 优化图例样式
-            legend2 = ax2.legend(loc='upper right', fontsize=9, frameon=True, fancybox=True, 
+            legend2 = ax2.legend(loc='upper right', fontsize=10, frameon=True, fancybox=True, 
                                shadow=True, framealpha=0.9, edgecolor='gray',
                                ncol=2 if credible_sets_df is not None and len(credible_sets_df["credible_set"].unique()) > 3 else 1)
             legend2.get_frame().set_linewidth(1.2)
@@ -1471,8 +1509,8 @@ def plot_manhattan_plots_from_integrated_results(
             # 添加统一的颜色条（基于 LD R² with Lead） - 学术样式
             # 在右侧添加颜色条，跨越两个子图的高度
             cbar = fig.colorbar(scatter2, ax=[ax1, ax2], fraction=0.015, pad=0.02, aspect=25, shrink=0.8)
-            cbar.set_label('LD R² with Lead Variant', rotation=270, labelpad=20, fontweight='bold', fontsize=11)
-            cbar.ax.tick_params(labelsize=9, width=1.2)
+            cbar.set_label('LD R² with Lead Variant', rotation=270, labelpad=20, fontweight='bold', fontsize=12)
+            cbar.ax.tick_params(labelsize=10, width=1.2)
             cbar.outline.set_linewidth(1.2)
             
             # 添加整体标题，包含可信集信息 - 学术样式
@@ -1484,7 +1522,7 @@ def plot_manhattan_plots_from_integrated_results(
                         f'Max -log$_{{10}}$(P): {df["-log10P"].max():.2f} | '
                         f'Max PIP: {df["PIP"].max():.3f}\n'
                         f'Credible Sets: {n_credible_sets} | CS variants: {n_credible_variants}', 
-                        fontsize=13, fontweight='bold', y=0.98)
+                        fontsize=16, fontweight='bold', y=0.98)
             
             # 优化布局和保存 - 学术发表标准
             plt.tight_layout(rect=[0, 0, 0.98, 0.95])  # 为suptitle和colorbar留出空间
