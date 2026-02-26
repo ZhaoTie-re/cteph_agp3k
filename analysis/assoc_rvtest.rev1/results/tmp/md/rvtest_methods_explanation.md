@@ -1,279 +1,278 @@
-# Methods & Results: Rare Variant Association Testing
+# 方法与结果：罕见变异关联分析
 
-## 1. Overview
-This document explains the **methodology** and **interpretation** of the rare variant association analysis for the CTEPH study.
-The goal is to determine if rare genetic mutations in specific genes are associated with CTEPH status. We use the tool `rvtest` to perform this analysis using two complementary strategies: **Burden Test** and **SKAT-O**.
-
----
-
-## 2. The Core Concept (Intuition before Math)
-
-Before diving into formulas, it helps to understand the logical flow of the analysis:
-
-1.  **Step 1: The "Baseline" Prediction (Null Model)**
-    *   First, we ignore genetics. We try to predict who has CTEPH based *only* on their Sex and Ancestry (Principal Components).
-    *   We calculate a "Residual" (Error) for each person:
-        *   *Positive Residual*: The person has CTEPH, but our baseline model predicted they were healthy. **Something else (genetics?) must be causing it.**
-2.  **Step 2: Check the Gene**
-    *   We look at a specific gene. Does carrying rare mutations in this gene correlate with those "Positive Residuals"?
-3.  **Step 3: Choose a Strategy**
-    *   **Burden Test**: Assumes all mutations in the gene are **Bad**. It sums them up.
-    *   **SKAT**: Assumes mutations are **Mixed** (some bad, some protective, some noise). It looks for *dispersion* (variance).
-    *   **SKAT-O**: Tries **Both** and picks the winner.
+## 1. 概述
+本文档解释了 CTEPH 研究中罕见变异关联分析的**方法论**和**结果解读**。
+目标是确定特定基因中的罕见遗传突变是否与 CTEPH 状态相关。我们使用工具 `rvtest`，通过两种互补的策略来进行此分析：**负荷检验 (Burden Test)** 和 **SKAT-O**。
 
 ---
 
-## 3. Statistical Models
+## 2. 核心概念（直观理解而非数学公式）
 
-### 3.1 The Null Model (The Baseline)
-We fit a Logistic Regression to remove the effect of confounders.
+在深入研究公式之前，了解分析的逻辑流程会有所帮助：
+
+1.  **步骤 1：“基线”预测（零模型）**
+    *   首先，我们忽略遗传学因素。我们要尝试*仅*基于性别和遗传背景（主成分）来预测谁患有 CTEPH。
+    *   我们计算每个人的一项“残差”（误差）：
+        *   *正残差*：该人患有 CTEPH，但我们的基线模型预测其为健康。**肯定有其他因素（遗传学？）导致了这种情况。**
+2.  **步骤 2：检查基因**
+    *   我们要查看特定的基因。携带该基因中的罕见突变是否与那些“残差”相关？
+3.  **步骤 3：选择策略**
+    *   **Burden Test (负荷检验)**：假设基因中的所有突变都是**有害的**。它将它们加总。
+    *   **SKAT**：假设突变是**效应异质的**（有些是有害的，有些是保护性的，有些是中性的）。它寻找*离散度*（方差）。
+    *   **SKAT-O**：尝试**两者**并挑选胜者。
+
+---
+
+## 3. 统计模型
+
+### 3.1 零模型（基线）
+我们拟合一个逻辑回归（Logistic Regression）来消除混杂因素的影响。
 
 $$logit(\pi_i) = \alpha + \gamma Sex_i + \sum_{k=1}^{10} \delta_k PC_{ik}$$
 
-*   **Result**: We get a **Residual** ($Y_i - \pi_i$) for every individual. This represents the "unexplained risk" that we hope the gene will explain.
+*   **结果**：我们得到每个体的**残差** ($Y_i - \pi_i$)。这代表了我们希望基因能解释的“未解释风险”。
 
-### 3.2 The Three Testing Approaches (Detailed Mechanics)
+### 3.2 三种检验方法（详细机制）
 
-Suppose we have a gene with **3 variants** in a patient "John".
-*   Variant 1: Highly Damaging (Score +2), Very Rare ($w=1.0$)
-*   Variant 2: Protective (Score -2), Less Rare ($w=0.5$)
-*   Variant 3: Noise (Score 0), Very Rare ($w=1.0$)
+假设在患者“John”身上有一个基因带有 **3 个变异**。
+*   变异 1：严重有害（分数 +2），非常罕见 ($w=1.0$)
+*   变异 2：保护性（分数 -2），较少罕见 ($w=0.5$)
+*   变异 3：中性/无效应（分数 0），非常罕见 ($w=1.0$)
 
-#### A. Burden Test (CMC) $\rightarrow$ "The Cumulative Load"
-*   **Analogy**: A **"Light Switch"**.
-*   **Logic**: "Is the gene broken? Yes or No?"
-*   **rvtest Weighting**: **None / Flat ($w=1$)**.
-    *   `rvtest` assumes every variant contributes equally to the "broken" status.
-*   **Detailed Calculation**:
-    1.  **Check**: Does John have *any* of these variants? $\rightarrow$ Yes.
-    2.  **Collapse**: $Score_{John} = 1$ (John is a carrier).
-    3.  **Test**: Compare the rate of "Carriers" in Cases vs Controls.
-    *   *Note*: The direction (+2 vs -2) and weight (1.0 vs 0.5) are **ignored**.
-*   **Key Assumption**: **Homogeneity**. All variants act in the same direction (Risk).
+#### A. Burden Test (CMC) $\rightarrow$ “累积负荷”
+*   **类比**：一个 **“电灯开关”**。
+*   **逻辑**：“基因功能受损了吗？是或否？”
+*   **rvtest 权重**：**无 / 均等权重 ($w=1$)**。
+    *   `rvtest` 假设每个变异对“受损”状态的贡献是均等的。
+*   **详细计算**：
+    1.  **检查**：John 是否拥有这些变异中的*任何一个*？ $\rightarrow$ 是。
+    2.  **聚合 (Collapse)**：$Score_{John} = 1$ (John 是携带者)。
+    3.  **检验**：比较病例组与对照组中“携带者”的比率。
+    *   *注意*：方向（+2 vs -2）和权重（1.0 vs 0.5）被**忽略**。
+*   **关键假设**：**同质性 (Homogeneity)**。所有变异的作用方向相同（均为风险因素）。
 
-#### B. SKAT $\rightarrow$ "The Variance Test"
-*   **Analogy**: **"Scatter Detection"**.
-*   **Logic**: "Are the effects in this gene dispersed?"
-*   **rvtest Weighting**: **Beta Distribution ($Beta(1, 25)$)**.
-    *   `rvtest` default: Weights are calculated as $w_j = Beta(MAF_j, 1, 25) \approx (1-MAF)^{24}$.
-    *   Rare variants get $w \approx 1$, common variants get $w \approx 0$.
-*   **Detailed Calculation**:
-    1.  **Score**: Calculate signal for each variant $j$ by checking its correlation with the unexplained risk:
+#### B. SKAT $\rightarrow$ “方差检验”
+*   **类比**：**“离散检测”**。
+*   **逻辑**：“这个基因中的效应是否存在分布差异？”
+*   **rvtest 权重**：**Beta 分布 ($Beta(1, 25)$)**。
+    *   `rvtest` 默认值：权重计算为 $w_j = Beta(MAF_j, 1, 25) \approx (1-MAF)^{24}$。
+    *   罕见变异得到 $w \approx 1$，常见变异得到 $w \approx 0$。
+*   **详细计算**：
+    1.  **评分**：通过检查每个变异 $j$ 与未解释风险的相关性来计算其信号：
         $$U_j = \sum_{individuals} G_{ij} \times \text{Residual}_i$$
-        *   **$G_{ij}$**: The **Genotype** (0, 1, or 2) from the VCF file.
-        *   **Residual$_i$**: The **Unexplained Risk** from the Null Model (See Sec 3.1).
-    2.  **Square**: Square the signal to remove direction ($U_j^2$).
-    3.  **Weight**: Apply the Beta weights ($w_j^2 U_j^2$).
-    4.  **Sum**: $Q_{SKAT} = (1.0 \times 2^2) + (0.5 \times -2^2) + \dots$
-    *   *Note*: The +2 and -2 **accumulate** instead of canceling out.
-*   **Key Assumption**: **Heterogeneity**. Variants can have different effects (+/-).
+        *   **$G_{ij}$**：来自 VCF 文件的 **基因型** (0, 1, 或 2)。
+        *   **Residual$_i$**：来自零模型的 **未解释风险**（见第 3.1 节）。
+    2.  **平方**：将信号平方以消除方向 ($U_j^2$)。
+    3.  **加权**：应用 Beta 权重 ($w_j^2 U_j^2$)。
+    4.  **求和**：$Q_{SKAT} = (1.0 \times 2^2) + (0.5 \times -2^2) + \dots$
+    *   *注意*：+2 和 -2 **作为方差累积**而不是相互抵消。
+*   **关键假设**：**异质性 (Heterogeneity)**。变异可以有不同的效应方向（+/-）。
 
-#### C. SKAT-O $\rightarrow$ "The Smart Adaptor"
-*   **Analogy**: A **Hybrid Car**.
-*   **Logic**: "Let's try mixing the two approaches."
-*   **rvtest Weighting**: **Beta Distribution ($Beta(1, 25)$)**.
-    *   Used for *both* the SKAT part and the Burden part inside SKAT-O.
-*   **Detailed Calculation**:
-    1.  Calculate $Q_{SKAT}$ ($\sum w_j^2 U_j^2$).
-    2.  Calculate $Q_{Burden}$ (Weighted Sum: $(\sum w_j U_j)^2$).
-    3.  **Mix**: Combine them using $\rho$ (0 to 1).
+#### C. SKAT-O $\rightarrow$ “自适应最优检验”
+*   **类比**：一辆 **混合动力汽车**。
+*   **逻辑**：“让我们尝试混合这两种方法。”
+*   **rvtest 权重**：**Beta 分布 ($Beta(1, 25)$)**。
+    *   用于 SKAT 部分和 SKAT-O 内部的 Burden 部分。
+*   **详细计算**：
+    1.  计算 $Q_{SKAT}$ ($\sum w_j^2 U_j^2$)。
+    2.  计算 $Q_{Burden}$ (加权和: $(\sum w_j U_j)^2$)。
+    3.  **混合**：使用 $\rho$ (0 到 1) 结合它们。
         $$Q_{\rho} = (1-\rho) Q_{SKAT} + \rho Q_{Burden}$$
-    4.  **Optimize**: Find the $\rho$ that gives the strongest signal.
-    *   If signals cancel out in Burden, SKAT wins ($\rho=0$).
-    *   If signals add up effectively, Burden wins ($\rho=1$).
+    4.  **优化**：找到给出最强信号的 $\rho$。
+    *   如果在 Burden 中信号相互抵消，SKAT 胜出 ($\rho=0$)。
+    *   如果信号有效地叠加，Burden 胜出 ($\rho=1$)。
 
 
 ---
 
-## 4. Methodological Details (The "How-To")
+## 4. 方法论细节（“如何做”）
 
-### 4.1 Comparison of Methods
+### 4.1 方法比较
 
-| Feature | Burden Test (CMC) | SKAT | SKAT-O |
+| 特征 | Burden Test (CMC) | SKAT | SKAT-O |
 | :--- | :--- | :--- | :--- |
-| **Statistical Model** | **Fixed Effect** | **Random Effect** | **Unified** |
-| **Calculation** | **Correlation with Binary Score**<br>(Collapse to 0/1, then Test) | **Weighted Sum of Squares**<br>$Q = \sum w_j^2 U_j^2$<br>(Using Score $U_j$ from Sec 3.2) | Best of both worlds |
-| **Constraint** | Assume all variants act in **Same Direction**. | Allows **Mixed Directions** (+/-). | **Adaptive**. |
-| **Effect Size** | **YES** (Odds Ratio). | **NO**. | **NO**. |
+| **统计模型** | **固定效应 (Fixed Effect)** | **随机效应 (Random Effect)** | **统一方法 (Unified)** |
+| **计算** | **与二元分数的相互关系**<br>(聚合为 0/1, 然后检验) | **加权平方和**<br>$Q = \sum w_j^2 U_j^2$<br>(使用来自 3.2 节的分数 $U_j$) | 两全其美 |
+| **约束** | 假设所有变异作用于 **相同方向**。 | 允许 **混合方向** (+/-)。 | **自适应**。 |
+| **效应大小** | **有** (比值比 Odds Ratio)。 | **无**。 | **无**。 |
 
-### 4.2 Explicit Comparison of "Burden" Types
+### 4.2 “Burden” 类型的明确比较
 
-Why did we use **CMC** instead of **Zeggini** or **Madsen-Browning (MB)**?
+为什么我们使用 **CMC** 而不是 **Zeggini** 或 **Madsen-Browning (MB)**？
 
-| Feature | **CMC** (Our Choice) | **Zeggini** | **Madsen-Browning** | **SKAT-O Burden** |
+| 特征 | **CMC** (我们的选择) | **Zeggini** | **Madsen-Browning** | **SKAT-O Burden** |
 | :--- | :--- | :--- | :--- | :--- |
-| **Logic** | **Binary Switch** | **Counter** | **Weighted Sum** | **Weighted Sum of Scores** |
-| **Rule** | "Do you have *any* mutation?"<br>(Yes/No) | "How *many* alleles do you have?"<br>(Unweighted Sum) | Sum, but rarer variants get **Inverse Variance Weight**. | Linear Sum of Scores $U_j$:<br>$(\sum w_j U_j)^2$ |
-| **Best For** | **Dominant Diseases**.<br>(1 hit is enough to get sick) | **Additive Risk**.<br>(2 hits are 2x worse) | If you assume rarer variants are *much* stronger, based on control data. | If you want stable, theoretical weighting for rare variants. |
-| **Weighting** | **Flat (Unweighted)**<br>$w_j = 1$<br>(A singleton counts as much as a 1% variant) | **Flat (Unweighted)**<br>$w_j = 1$<br>(Same as CMC) | **Inverse Variance**<br>$w_j \propto \frac{1}{\sqrt{MAF(1-MAF)}}$<br>(Data-Driven: Rare in *this* dataset = Higher Weight) | **Beta Distribution**<br>$w_j = Beta(MAF, 1, 25)$<br>$\approx (1-MAF)^{24}$<br>(Theoretical: MAF < 0.01 $\rightarrow$ Weight > 0.8) |
+| **逻辑** | **二元开关 (Binary Switch)** | **计数变量 (Counter)** | **加权和** | **加权分数和** |
+| **规则** | “你有*任何*突变吗？”<br>(是/否) | “你有*多少*个等位基因？”<br>(非加权和) | 求和，但较罕见的变异获得 **逆方差权重**。 | 分数 $U_j$ 的线性及:<br>$(\sum w_j U_j)^2$ |
+| **最适合** | **显性遗传模式**。<br>(单次命中足以致病) | **加性风险**。<br>(双次命中后果严重 2 倍) | 如果你基于对照数据假设较罕见的变异*更*强。 | 如果你想要罕见变异的稳定、理论权重。 |
+| **权重** | **均等权重 (无权重)**<br>$w_j = 1$<br>(单例变异与 1% 变异在计数上相同) | **均等权重 (无权重)**<br>$w_j = 1$<br>(与 CMC 相同) | **逆方差**<br>$w_j \propto \frac{1}{\sqrt{MAF(1-MAF)}}$<br>(数据驱动：在*此*数据集中罕见 = 更高权重) | **Beta 分布**<br>$w_j = Beta(MAF, 1, 25)$<br>$\approx (1-MAF)^{24}$<br>(理论：MAF < 0.01 $\rightarrow$ 权重 > 0.8) |
 
-### 4.3 Technical Note: SKAT-O Components vs. Standalone Tests
+### 4.3 技术说明：SKAT-O 组件 vs. 独立检验
 
-It is common to ask: *"Is the Burden test inside SKAT-O the same as the Burden test I ran separately?"*
+经常有人问：*“SKAT-O 内部的 Burden 检验和我单独运行的 Burden 检验是一样的吗？”*
 
-**1. The SKAT Component ($\rho=0$) $\rightarrow$ SAME**
-*   **Standalone SKAT**: Uses the variance component score test with Beta[1,25] weights.
-*   **SKAT-O ($\rho=0$)**: Uses the **exact same** calculation.
-*   *Result*: If you run `rvtest --test skat`, the P-value will match the $\rho=0$ component inside SKAT-O.
+**1. SKAT 组件 ($\rho=0$) $\rightarrow$ 相同**
+*   **独立 SKAT**：使用带有 Beta[1,25] 权重的方差分量分数检验。
+*   **SKAT-O ($\rho=0$)**：使用 **完全相同** 的计算。
+*   *结果*：如果你运行 `rvtest --test skat`，P 值将匹配 SKAT-O 内部的 $\rho=0$ 组件。
 
-**2. The Burden Component ($\rho=1$) $\rightarrow$ DIFFERENT**
-*   **Standalone Burden (CMC)**:
-    *   **Method**: **Binary Collapsing**. It collapses all variants to a simple 0/1 vector.
-    *   **Weighting**: **None (Flat)**. All variants are treated equally.
-    *   *Consequence*: A singleton mutation has the *same impact* as a mutation with MAF=1% or 5%.
-*   **SKAT-O Burden ($\rho=1$)**:
-    *   **Method**: **Weighted Sum of Scores**. It calculates the squared linear sum: $(\sum w_j U_j)^2$.
-    *   **Weighting**: **Yes, Strongly MAF-Dependent**. It uses the Beta density function ($Beta(MAF, 1, 25)$).
-        *   **Justification (Negative Selection)**: We assume that variants with lower MAF are more likely to be deleterious (damaging), because natural selection removes bad variants from the population.
-        *   **Behavior (Beta[1,25] weights)**:
-            *   **Singleton (MAF $\approx$ 0)**: Weight $\approx$ 1.0 (Maximum Impact).
-            *   **Ultra-Rare (MAF = 0.001)**: Weight $\approx$ 0.98 (Still Very High).
-            *   **Rare Threshold (MAF = 0.01)**: Weight $\approx$ 0.78 (Already dropped by ~22%).
-    *   *Consequence*: SKAT-O's burden test is heavily biased towards **ultra-rare** variants. Even at the generic "rare" cutoff of 1% (MAF=0.01), the weight has already decreased significantly compared to a singleton. If the signal is driven by variants near 0.01, CMC (which treats them as 1.0) might perceive a stronger signal than SKAT-O.
-*   *Result*: They often yield different P-values. The SKAT-O Burden is usually more sensitive to ultra-rare variants due to the weighting.
+**2. Burden 组件 ($\rho=1$) $\rightarrow$ 不同**
+*   **独立 Burden (CMC)**：
+    *   **方法**：**二元聚合**。它将所有变异聚合为一个简单的 0/1 向量。
+    *   **权重**：**无 (均等)**。所有变异被平等对待。
+    *   *后果*：单例突变与 MAF=1% 或 5% 的突变具有*相同的影响*。
+*   **SKAT-O Burden ($\rho=1$)**：
+    *   **方法**：**分数加权和**。它计算平方线性及: $(\sum w_j U_j)^2$。
+    *   **权重**：**有，强烈依赖 MAF**。它使用 Beta 密度函数 ($Beta(MAF, 1, 25)$)。
+        *   **理由 (负选择)**：我们假设 MAF 较低的变异更有可能是有害的（致病的），因为自然选择从群体中移除了有害变异。
+        *   **行为 (Beta[1,25] 权重)**：
+            *   **单例 (MAF $\approx$ 0)**: 权重 $\approx$ 1.0 (最大影响)。
+            *   **极罕见 (MAF = 0.001)**: 权重 $\approx$ 0.98 (仍然非常高)。
+            *   **罕见阈值 (MAF = 0.01)**: 权重 $\approx$ 0.78 (已经下降了 ~22%)。
+    *   *后果*：SKAT-O 的 Burden 检验严重偏向 **极罕见** 变异。即使在通用的“罕见”截止值 1% (MAF=0.01) 处，与单例相比，权重已经显著下降。如果信号是由 0.01 附近的变异驱动的，CMC（将其视为 1.0）可能会感知到比 SKAT-O 更强的信号。
+*   *结果*：它们通常产生不同的 P 值。由于加权原因，SKAT-O Burden 通常对极罕见变异更敏感。
 
 ---
 
-## 5. Result Interpretation Guide
+## 5. 结果解读指南
 
-### 5.1 Output Files and Columns
+### 5.1 输出文件和列
 
-| Output File | Key Column | Meaning for Human Readers |
+| 输出文件 | 关键列 | 对人类读者的意义 |
 | :--- | :--- | :--- |
-| **Burden (CMC)** | `Pvalue` | The probability that valid association is random. <br> **Small P** = Highly Significant (Carrying the gene burden increases risk). |
-| | `NonRefSite` | The total number of mutations found in this gene across all people. |
-| **SKAT-O** | `Pvalue` | The final significance *after* correcting for the complexity of the test. |
-| | `rho` ($\rho$) | **The Diagnosis of the Gene**: <br> $\rho=1$: "This gene behaves like a classic Burden gene." <br> $\rho=0$: "This gene has complex/mixed effects." |
+| **Burden (CMC)** | `Pvalue` | 有效关联仅仅是随机的概率。<br> **小 P 值** = 高度显著（携带基因负荷增加风险）。 |
+| | `NonRefSite` | 所有人在该基因中发现的突变总数。 |
+| **SKAT-O** | `Pvalue` | 针对检验复杂性进行校正*后*的最终显著性。 |
+| | `rho` ($\rho$) | **基因的特性诊断**：<br> $\rho=1$: “该基因表现得像一个经典的 Burden 基因（累积效应）” <br> $\rho=0$: “该基因具有复杂/异质性效应。” |
 
-### 5.2 Where is the "Beta" (Effect Size)?
+### 5.2 “Beta” (效应大小) 在哪里？
 
-*   **Can ALL Burden Tests calculate a Beta?**
-    *   **Yes, mathematically.** Since all Burden tests compress the gene into a single score variable ($X'$), you can always run a regression ($Y \sim \beta X'$) to get a Beta.
-    *   **But interpretation varies wildly**:
-        *   **CMC (Binary)**: $\beta$ = Log Odds Ratio of **Carriers vs Non-Carriers**. This is highly interpretable and clinically standard ("Risk increases 5-fold").
-        *   **Zeggini (Count)**: $\beta$ = Log Odds Ratio **per Allele** ("Risk increases 2-fold for every extra mutation").
-        *   **Weighted Burden (e.g. SKAT-O $\rho=1$, Madsen-Browning)**: $\beta$ = Log Odds Ratio **per unit of Weighted Score**. Since the score is an abstract sum of weights (e.g., 0.98 + 0.45 + ...), saying "Risk increases for every 1.0 score" is **hard for humans to interpret clinically**.
-*   **SKAT / SKAT-O (Variance Tests)**:
-    *   They do **NOT** have a single Beta.
-    *   *Why?* Because they model the **variance** of effects, not the mean. They allow different variants to have different directions (+/-), so a single "Average Beta" would be meaningless (e.g., average of +2 and -2 is 0).
+*   **所有 Burden 检验都能计算 Beta 吗？**
+    *   **是的，数学上可以。** 既然所有 Burden 检验都将基因压缩为一个单一的分数变量 ($X'$)，你总是可以运行回归 ($Y \sim \beta X'$) 来获得 Beta。
+    *   **但解释差异很大**：
+        *   **CMC (二元)**：$\beta$ = **携带者 vs 非携带者** 的对数比值比 (Log Odds Ratio)。这具有高度可解释性且临床标准（“风险增加 5 倍”）。
+        *   **Zeggini (计数)**：$\beta$ = **每个等位基因** 的对数比值比（“每增加一个突变风险增加 2 倍”）。
+        *   **加权 Burden (例如 SKAT-O $\rho=1$, Madsen-Browning)**：$\beta$ = **每单位加权分数** 的对数比值比。由于分数是权重的抽象和（例如，0.98 + 0.45 + ...），说“每增加 1.0 分数风险增加”对**人类来说很难在临床上解释**。
+*   **SKAT / SKAT-O (方差检验)**：
+    *   它们 **没有** 一个单一的 Beta。
+    *   *为什么？* 因为它们建模效应的 **方差**，而不是均值。它们允许不同的变异有不同的方向（+/-），所以单一的“平均 Beta”将毫无意义（例如，+2 和 -2 的平均值是 0）。
 
 ---
 
-## 6. Methodological QA (Why is it like this?)
+## 6. 方法论 QA（为什么是这样？）
 
-### 6.1 Strategy Rationale
+### 6.1 策略理由
 
-#### 1. Why do we combine CMC Burden and SKAT-O?
-We deliberately paired these two methods to balance **Discovery Power** with **Clinical Interpretability**:
+#### 1. 为什么我们结合 CMC Burden 和 SKAT-O？
+我们要刻意搭配这两种方法以平衡 **发现效力 (Power of Discovery)** 和 **临床可解释性**：
 
-*   **SKAT-O (The "Hunter")**: Its primary role is **Discovery/Sensitivity**. Since we do not know apriori if CTEPH genes behave as "Cumulative" (Burden) or "Dispersed" (Variance), SKAT-O scans all possibilities. It adapts to the data ($\rho$) to ensure we don't miss complex signals that simple tests might fail to see (Minimizing False Negatives).
-*   **CMC (The "Measurer")**: Its primary role is **Quantification**. SKAT-O provides a P-value but no clear measure of risk magnitude. CMC forces the data into a binary model (Carrier vs Non-Carrier) specifically to calculate an **Odds Ratio (OR)**. Even if CMC is less significant than SKAT-O, the OR provides the critical clinical context (e.g., "Carriers are at 5x risk").
+*   **SKAT-O (“探索工具”)**：其主要作用是 **发现/敏感性**。由于我们先验不知道 CTEPH 基因表现为“累积” (Burden) 还是“分散” (方差)，SKAT-O 扫描所有可能性。它适应数据 ($\rho$) 以确保我们不会错过简单检验可能无法看到的复杂信号（最小化假阴性）。
+*   **CMC (“量化工具”)**：其主要作用是 **量化**。SKAT-O 提供 P 值，但没有明确的风险幅度度量。CMC 强行将数据放入二元模型（携带者 vs 非携带者），专门用于计算 **比值比 (Odds Ratio, OR)**。即使 CMC 的显著性低于 SKAT-O，OR 也提供了关键的临床背景（例如，“携带者处于 5 倍风险中”）。
 
-#### 2. Why did we NOT run a standalone SKAT?
-*   **Redundancy**: SKAT is **already integrated** within SKAT-O.
-    *   SKAT-O checks the SKAT model ($\rho=0$) as part of its optimization process.
-    *   If a gene is best explained by the SKAT model (pure variance), SKAT-O will automatically select $\rho=0$ and yield a result equivalent to running SKAT alone.
-*   **Statistical Efficiency**: Running SKAT as a third independent test would add no unique information but would effectively increase our Multiple Testing Burden (requiring a stricter P-value threshold). By using SKAT-O, we get the benefit of SKAT without the penalty of an extra test.
+#### 2. 为什么我们不运行独立的 SKAT？
+*   **冗余**：SKAT **已经集成** 在 SKAT-O 中。
+    *   作为优化过程的一部分，SKAT-O 会检查 SKAT 模型 ($\rho=0$)。
+    *   如果一个基因最好由 SKAT 模型（纯方差）解释，SKAT-O 将自动选择 $\rho=0$ 并产生与单独运行 SKAT 等效的结果。
+*   **统计效率**：将 SKAT 作为第三个独立检验运行不会增加独特信息，但会有效地增加我们的多重检验负担（需要更严格的 P 值阈值）。通过使用 SKAT-O，我们获得了 SKAT 的好处，而没有额外检验的惩罚。
 
-### 6.2 Why is the SKAT-O P-value different from Burden (even if $\rho=1$)?
-You might see: *Burden P = 1.0e-5*, but *SKAT-O P = 2.0e-5*. Why?
+### 6.2 为什么 SKAT-O P 值与 Burden 不同（即使 $\rho=1$）？
+你可能会看到：*Burden P = 1.0e-5*，但 *SKAT-O P = 2.0e-5*。为什么？
 
-*   **Reason 1: The "Search Penalty" (P-value $\uparrow$)**
-    *   Burden Test asks **1 question**: "Is the Burden significant?"
-    *   SKAT-O asks **11 questions**: "Is $\rho=0$ significant? ... Is $\rho=1$ significant?"
-    *   Because SKAT-O asks more questions, statistics demands we **penalize** the final P-value to prevent cheating. This makes the P-value slightly larger (less significant).
+*   **原因 1：“搜索惩罚” (P 值 $\uparrow$)**
+    *   Burden 检验问 **1 个问题**：“Burden 显著吗？”
+    *   SKAT-O 问 **11 个问题**：“$\rho=0$ 显著吗？... $\rho=1$ 显著吗？”
+    *   因为 SKAT-O 问了更多问题，统计学要求我们 **惩罚** 最终的 P 值以防止作弊。这使得 P 值略微变大（不太显著）。
 
-*   **Reason 2: The "Weighting Boost" (P-value $\downarrow$)**
-    *   CMC is **Unweighted** (1 mutation = 1 score).
-    *   SKAT-O is **Weighted** (Beta Weights). Even at $\rho=1$, it gives extra points for *extremely rare* variants.
-    *   If your gene is driven by ultra-rare variants, SKAT-O's weighting might make it **more significant** than CMC, despite the penalty.
+*   **原因 2：“权重提升” (P 值 $\downarrow$)**
+    *   CMC 是 **无权重的**（1 个突变 = 1 分）。
+    *   SKAT-O 是 **加权的**（Beta 权重）。即使在 $\rho=1$，它也会给予*极罕见*变异额外的分数。
+    *   如果你的基因由极罕见变异驱动，SKAT-O 的权重可能使其比 CMC **更显著**，尽管有惩罚。
 
-### 6.3 Why does only Burden Test provide a Beta (Effect Size)?
-It is often frustrating that SKAT/SKAT-O only gives a P-value, but no Odds Ratio. This is due to the mathematical design:
+### 6.3 为什么只有 Burden 检验提供 Beta（效应大小）？
+令人沮丧的是 SKAT/SKAT-O 仅给出 P 值，但没有比值比。这是由于数学设计所致：
 
-*   **Burden Test (CMC)**: 
-    *   **Simplification**: It forces the gene into a **single variable** ($X'$: Carrier vs Non-Carrier).
-    *   **Result**: Since there is only one variable, we can calculate **one Beta** ($\beta$). 
-    *   **Meaning**: "On average, being a carrier increases risk by $\exp(\beta)$."
+*   **Burden Test (CMC)**： 
+    *   **简化**：它强行将基因放入 **单一变量** ($X'$: 携带者 vs 非携带者)。
+    *   **结果**：既然只有一个变量，我们可以计算 **一个 Beta** ($\beta$)。 
+    *   **意义**：“平均而言，作为一个携带者风险增加 $\exp(\beta)$。”
 
-*   **SKAT / SKAT-O**:
-    *   **Complexity**: They acknowledge that a gene contains many variants ($G_1, G_2, \dots, G_n$), and each variant has its **own** effect size ($\beta_1, \beta_2, \dots, \beta_n$).
-    *   **Problem**: We cannot accurately estimate 50 different Betas for one gene.
-    *   **Solution**: Instead of estimating the *Mean* effect (Beta), SKAT tests the **Variance** of the effects ($\tau$).
-    *   **Result**: It answers "Is there significant genetic activity here?" but cannot give a single directional number because the variants might be acting in different directions (some increasing risk, some decreasing). A single Beta would be misleading (e.g., average of +2 and -2 is 0).
+*   **SKAT / SKAT-O**：
+    *   **复杂性**：它们承认一个基因包含许多变异 ($G_1, G_2, \dots, G_n$)，并且每个变异有其 **自己** 的效应大小 ($\beta_1, \beta_2, \dots, \beta_n$)。
+    *   **问题**：我们无法准确地为一个基因估计 50 个不同的 Beta。
+    *   **解决方案**：SKAT 测试效应的 **方差** ($\tau$)，而不是估计 *均值* (Beta)。
+    *   **结果**：它回答“这里有显著的遗传活动吗？”，但不能给出一个单一的方向性数字，因为变异可能作用于不同的方向（有些增加风险，有些减少）。单一的 Beta 会产生误导（例如，+2 和 -2 的平均值是 0）。
 
-## 7. Mathematical Specification & Post-Analysis
+## 7. 数学规范 & 后分析
 
-### 7.1 The Regression Models (Formal Specification)
+### 7.1 回归模型（正式规范）
 
-To ensure precision, we define the exact Generalized Linear Models (GLM) used for the **CMC Burden Test**, **SKAT**, and **SKAT-O**.
+为了确保精确，我们定义用于 **CMC Burden Test**、**SKAT** 和 **SKAT-O** 的确切广义线性模型 (GLM)。
 
-#### A. The Null Model (Baseline)
-This model removes the effects of covariates to calculate the **Residuals** ($Y_i - \pi_i$). It is the foundation for all subsequent tests.
+#### A. 零模型（基线）
+此模型消除协变量的影响以计算 **残差** ($Y_i - \pi_i$)。它是所有后续检验的基础。
 $$logit(\pi_i) = \ln\left(\frac{\pi_i}{1-\pi_i}\right) = \alpha + \gamma Sex_i + \sum_{k=1}^{10} \delta_k PC_{ik}^{(BBJ)}$$
 
-#### B. Burden Test Models (Collapsing Strategies)
-Burden tests compress the variants in a gene into a single "Meta-Genotype" predictor, denoted here as $M_i$.
+#### B. Burden 检验模型（聚合策略）
+Burden 检验将基因中的变异压缩为单一的“元基因型”预测变量，此处表示为 $M_i$。
 $$logit(\pi_i) = \alpha + \mathbf{\beta_{burden} M_i} + \gamma Sex_i + \sum_{k=1}^{10} \delta_k PC_{ik}^{(BBJ)}$$
-The definition of $M_i$ depends on the specific Burden method:
-*   **CMC (Standard Burden)**: $M_i$ is **Binary**.
+$M_i$ 的定义取决于具体的 Burden 方法：
+*   **CMC (标准 Burden)**：$M_i$ 是 **二元的**。
     $$M_i = I\left(\sum_{j=1}^{m} G_{ij} > 0\right)$$
-    *(Interpretation: 1 if user carries ANY variant, 0 otherwise. $\beta_{burden}$ is the Log-OR of being a carrier.)*
-*   **SKAT-O Burden ($\rho=1$)**: $M_i$ is a **Weighted Sum**.
+    *(解释：如果用户携带任何变异则为 1，否则为 0。$\beta_{burden}$ 是作为携带者的 Log-OR。)*
+*   **SKAT-O Burden ($\rho=1$)**：$M_i$ 是 **加权和**。
     $$M_i = \sum_{j=1}^{m} w_j G_{ij}$$
-    *(Interpretation: A linear sum where rare variants contribute more due to weight $w_j$.)*
+    *(解释：由于权重 $w_j$，罕见变异贡献更多的线性和。)*
 
-#### C. SKAT (Variance Component Model)
-Instead of collapsing, SKAT tests the joint distribution of all variant effects $\beta_j$ simultaneously.
+#### C. SKAT (方差分量模型)
+SKAT 不是聚合，而是同时检验所有变异效应 $\beta_j$ 的联合分布。
 $$logit(\pi_i) = \alpha + \sum_{j=1}^{m} \beta_j G_{ij} + \gamma Sex_i + \sum_{k=1}^{10} \delta_k PC_{ik}^{(BBJ)}$$
-*   **Constraint**: We do not estimate each $\beta_j$ directly. Instead, we assume $\beta_j$ follows a distribution:
+*   **约束**：我们不直接估计每个 $\beta_j$。相反，我们假设 $\beta_j$ 服从分布：
     $$\beta_j \sim N(0, \tau w_j^2)$$
-*   **Hypothesis**: We test $H_0: \tau = 0$ (i.e., Is the variance of genetic effects significantly non-zero?).
+*   **假设**：我们检验 $H_0: \tau = 0$（即，遗传效应的方差是否显著非零？）。
 
-#### D. SKAT-O (Unified)
-SKAT-O does not have a separate regression equation. Instead, it constructs a test statistic $Q_{\rho}$ that linearly combines the squared scores from the **SKAT** approach and the **Weighted Burden** approach:
+#### D. SKAT-O (统一方法)
+SKAT-O 没有单独的回归方程。相反，它构建了一个检验统计量 $Q_{\rho}$，线性结合了 **SKAT** 方法和 **加权 Burden** 方法的平方分数：
 $$Q_{\rho} = (1-\rho) Q_{SKAT} + \rho Q_{Burden}$$
 
 ---
 
-**Variable Definitions (Unified):**
+**变量定义（统一方法）：**
 
-| Symbol | Definition | Context & Notes |
+| 符号 | 定义 | 上下文 & 备注 |
 | :--- | :--- | :--- |
-| $\pi_i$ | **Probability of CTEPH** | $P(Y_i=1)$, estimated from the Null Model. |
-| $\alpha, \gamma, \delta$ | **Covariate Coefficients** | Intercept, Sex effect, and PC effects. |
-| $G_{ij}$ | **Raw Genotype** | Count of minor alleles (0, 1, or 2) for variant $j$ in person $i$. |
-| $M_i$ | **Collapsed Score** | The single predictor variable used in Burden tests. <br> * **CMC**: Binary (0/1). <br> * **SKAT-O($\rho=1$)**: Weighted Sum ($\sum w G$). |
-| $w_j$ | **Variant Weight** | * **CMC**: $w_j = 1$ (Flat). <br> * **SKAT/SKAT-O**: $w_j = Beta(MAF_j, 1, 25)$. |
-| $\beta_{burden}$ | **Fixed Effect Size** | The scalar effect size we estimate in Burden tests. |
-| $\beta_j$ | **Random Effect Size** | The random effect of variant $j$ in SKAT. |
-| $\tau$ | **Variance Component** | Represents the magnitude of genetic variation in the gene. |
+| $\pi_i$ | **CTEPH 概率** | $P(Y_i=1)$，从零模型估计。 |
+| $\alpha, \gamma, \delta$ | **协变量系数** | 截距，性别效应，和 PC 效应。 |
+| $G_{ij}$ | **原始基因型** | 人 $i$ 的变异 $j$ 的次等位基因计数（0, 1, 或 2）。 |
+| $M_i$ | **聚合后分数** | Burden 检验中使用的单一预测变量。 <br> * **CMC**: 二元 (0/1)。 <br> * **SKAT-O($\rho=1$)**: 加权和 ($\sum w G$)。 |
+| $w_j$ | **变异权重** | * **CMC**: $w_j = 1$ (均等)。 <br> * **SKAT/SKAT-O**: $w_j = Beta(MAF_j, 1, 25)$。 |
+| $\beta_{burden}$ | **固定效应大小** | 我们在 Burden 检验中估计的标量效应大小。 |
+| $\beta_j$ | **随机效应大小** | SKAT 中变异 $j$ 的随机效应。 |
+| $\tau$ | **方差分量** | 代表基因均遗传变异的幅度。 |
 
 ---
 
-### 7.2 P-value Interpretation & Post-Processing
+### 7.2 P 值解读 & 后处理
 
-The raw P-values from `rvtests` (SKAT-O) already account for the internal multiple testing of different $\rho$ weights. However, they do **not** account for the fact that we tested thousands of genes across the genome. We apply the following two-step procedure to determine significance:
+`rvtests` (SKAT-O) 的原始 P 值已经考虑了不同 $\rho$ 权重的内部多重检验。然而，它们 **没有** 考虑我们在整个基因组中检验了数千个基因这一事实。我们应用以下两步程序来确定显著性：
 
-#### Step 1: Quality Control Filtering (Defining $N_{genes}$)
-Before checking significance, we filter the gene list to ensure statistical power.
-*   **Criterion**: A gene is only "tested" if it contains **at least 2 valid variants** in the dataset (after QC).
-*   **Logic**: Genes with 0 or 1 variant have insufficient information for a variance-based test (SKAT) or association test, often yielding meaningless P-values (e.g., P=1.0 or unstable estimates). Including them artificially inflates the correction burden.
-*   **Result**: This defines our final number of tests, $N_{genes}$ (e.g., reducing from 20,000 total genes to ~15,000 effective genes).
+#### 步骤 1：质量控制过滤 (定义 $N_{genes}$)
+在检查显著性之前，我们过滤基因列表以确保统计功效。
+*   **标准**：仅当基因在数据集中包含 **至少 2 个有效变异**（QC 后）时，才被“检验”。
+*   **逻辑**：具有 0 或 1 个变异的基因对于基于方差的检验 (SKAT) 或关联检验信息不足，通常会产生无意义的 P 值（例如 P=1.0 或不稳定的估计）。包括它们会人为地膨胀校正负担。
+*   **结果**：这定义了我们最终的检验数量，$N_{genes}$（例如，从总共 20,000 个基因减少到 ~15,000 个有效基因）。
 
-#### Step 2: Significance Thresholds
+#### 步骤 2：显著性阈值
 
-We employ two complementary approaches to identify candidate genes:
+我们采用两种互补的方法来识别候选基因：
 
-**A. Stringent Threshold (Bonferroni Correction)**
-*   **Goal**: Strict control of Family-Wise Error Rate (probability of getting *any* false positive).
-*   **Calculation**:
+**A. 严格阈值 (Bonferroni 校正)**
+*   **目标**：严格控制族系误差率 (Family-Wise Error Rate)（得到*任何*假阳性的概率）。
+*   **计算**：
     $$\alpha_{Bonferroni} = \frac{0.05}{N_{genes}}$$
-*   **Example**: If $N_{genes} \approx 15,000$, then $\alpha \approx 3.3 \times 10^{-6}$.
-*   **Verdict**: Any gene with $P < \alpha_{Bonferroni}$ is considered **Significantly Associated**.
+*   **例子**：如果 $N_{genes} \approx 15,000$，那么 $\alpha \approx 3.3 \times 10^{-6}$。
+*   **结论**：任何 $P < \alpha_{Bonferroni}$ 的基因被认为是 **显著相关**。
 
-**B. Discovery Threshold (False Discovery Rate - FDR)**
-*   **Goal**: Control the proportion of false positives among the top results (Benjamini-Hochberg method).
-*   **Calculation**: We calculate the **q-value** (FDR adjusted P-value) for all $N_{genes}$.
-*   **Verdict**: Genes with **FDR < 0.05** (or 0.10) are considered **Top Candidates** for validation. This approach is more sensitive than Bonferroni and helps ensure we don't miss true signals with moderate effect sizes.
-
+**B. 发现阈值 (错误发现率 - FDR)**
+*   **目标**：控制顶部结果中假阳性的比例 (Benjamini-Hochberg 方法)。
+*   **计算**：我们为所有 $N_{genes}$ 计算 **q 值** (FDR 调整后的 P 值)。
+*   **结论**：**FDR < 0.05** (或 0.10) 的基因被认为是 **验证的头号候选**。这种方法比 Bonferroni 更敏感，有助于确保我们不会错过具有中等效应大小的真实信号。
