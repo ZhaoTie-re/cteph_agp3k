@@ -190,6 +190,7 @@ def annotate_vcf_with_snpeff_tsv(
     max_workers: Optional[int] = None,
     log_file: Optional[Union[str, Path]] = None,
     log_level: str = "INFO",
+    allow_ref_alt_swap: bool = False,
 ) -> Tuple[Path, Dict]:
     """
     Annotate VCF with snpEff TSV files.
@@ -207,6 +208,7 @@ def annotate_vcf_with_snpeff_tsv(
     logger.info(f"Input VCF   : {vcf_path}")
     logger.info(f"Annotation  : {snpeff_tsv_dir}")
     logger.info(f"Mode        : {'Parallel' if parallel else 'Serial'}")
+    logger.info(f"Allow REF/ALT swap: {allow_ref_alt_swap}")
     
     vcf_path = Path(vcf_path)
     snpeff_tsv_dir = Path(snpeff_tsv_dir)

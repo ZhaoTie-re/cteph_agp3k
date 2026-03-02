@@ -134,6 +134,11 @@ Notes:
         default=8,
         help="Number of threads for bcftools (Default: 8)"
     )
+    performance_group.add_argument(
+        "--allow-ref-alt-swap", 
+        action="store_true",
+        help="Allow annotation if REF/ALT are strictly swapped (Start Flip). Checks REF=ALT_ann and ALT=REF_ann."
+    )
     
     # Log and Debug options
     debug_group = parser.add_argument_group("Log and Debug Options")
