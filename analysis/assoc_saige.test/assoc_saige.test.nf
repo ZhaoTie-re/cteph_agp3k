@@ -6,9 +6,9 @@ params.InfoPath = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/inf
 params.ContainerPath = '/home/b/b37974/simg'
 params.ScriptsPath = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/analysis/assoc_saige.test/scripts'
 params.OutPath = '/LARGE0/gr10478/b37974/Pulmonary_Hypertension/cteph_agp3k/analysis/assoc_saige.test/results'
-params.Covariates = 'SEX'
+params.Covariates = 'SEX,PC1_AVG,PC2_AVG,PC3_AVG,PC4_AVG,PC5_AVG,PC6_AVG,PC7_AVG,PC8_AVG,PC9_AVG,PC10_AVG'
 params.GRM = 'full' // Options: 'sparse', 'full'
-params.FilterMAC = false // Options: true, false
+params.FilterMAC = true // Options: true, false
 params.MACThreshold = 20
 
 /*
@@ -516,7 +516,7 @@ process PLOT_MANHATTAN_QQ_FULL_GRM {
  */
 workflow {
     // Define input channels
-    plink_file_prefix = "${params.WGSPath}/18.tommo_panel_filter/cteph_agp3k.lowfreq_common"
+    plink_file_prefix = "${params.WGSPath}/15.run_variant_qc/cteph_agp3k.sqc.vqc"
     
     // Create a channel for the PLINK fileset (bed, bim, fam)
     // Using fromFilePairs to group them together
